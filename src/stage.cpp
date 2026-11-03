@@ -1,397 +1,707 @@
 // The stage behind the highway. See stage.hpp.
 //
-// The band is original to this game: Nina on vocals (short platinum hair,
-// green bomber), Caio on guitar (the player: red flannel, long dark hair, a
-// teal offset-body guitar) and Bento on drums (beanie, striped tank top).
-// They are paper puppets: limbs are thick lines between joints placed by
-// two-bone IK, so a hand goes where it is needed (pick, neck, drum, mic) and
-// the elbow follows.
+// A small low-poly 3D scene, rebuilt every frame: meshes are generated on the
+// CPU, lit per vertex (coloured key and fill lights plus a rim from the LED
+// wall), depth sorted and drawn back to front through look::mesh(), so it
+// costs one batched draw and works the same on desktop and Switch.
+//
+// The band is original to this game: Nina on vocals (platinum crop, green
+// bomber), Caio on guitar (the player: long dark hair, leather jacket, a teal
+// offset guitar), Luna on bass (violet bob, white jacket) and Bento on drums
+// (beanie and beard). Bodies are capsules on a simple rig; hands are placed by
+// two-bone IK on the pick, the neck, the mic or a drum, and the elbows follow.
 #include "stage.hpp"
 #include "look.hpp"
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdlib>
 #include <string>
-#include <cmath>
-#include <tuple>
-#include <utility>
+#include <vector>
 
 namespace fret::stage {
 using namespace look;
 namespace {
-using P = SDL_FPoint;
 constexpr float Pi = 3.14159265f;
 
+// ------------------------------------------------------------ maths
+struct V3 {
+    float x = 0, y = 0, z = 0;
+};
+V3 operator+(V3 a, V3 b) { return {a.x + b.x, a.y + b.y, a.z + b.z}; }
+V3 operator-(V3 a, V3 b) { return {a.x - b.x, a.y - b.y, a.z - b.z}; }
+V3 operator*(V3 a, float s) { return {a.x * s, a.y * s, a.z * s}; }
+float dot(V3 a, V3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
+V3 cross(V3 a, V3 b) { return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x}; }
+float length(V3 a) { return std::sqrt(dot(a, a)); }
+V3 norm(V3 a) {
+    const float l = length(a);
+    return l > 1e-6f ? a * (1 / l) : V3{0, 1, 0};
+}
+V3 lerp(V3 a, V3 b, float t) { return a + (b - a) * t; }
+float frac(double v) { return float(v - std::floor(v)); }
+float clamp01(float v) { return std::clamp(v, 0.0f, 1.0f); }
+float ease(double age, double life) {
+    if (age < 0 || age > life)
+        return 0;
+    const float t = float(1 - age / life);
+    return t * t;
+}
+float smooth(float t) {
+    t = clamp01(t);
+    return t * t * (3 - 2 * t);
+}
+SDL_Color rgb(int r, int g, int b, int a = 255) { return {Uint8(r), Uint8(g), Uint8(b), Uint8(a)}; }
+// An orthonormal frame: r(ight), u(p), f(orward, toward the audience).
+struct Frame {
+    V3 r{1, 0, 0}, u{0, 1, 0}, f{0, 0, 1};
+    V3 at(V3 o, float x, float y, float z) const { return o + r * x + u * y + f * z; }
+    V3 dir(float x, float y, float z) const { return r * x + u * y + f * z; }
+};
+Frame frameFrom(V3 up, V3 forwardHint) {
+    Frame fr;
+    fr.u = norm(up);
+    fr.r = norm(cross(fr.u, forwardHint));
+    fr.f = cross(fr.r, fr.u);
+    return fr;
+}
+// Two-bone IK in 3D: the middle joint, bent toward `pole`.
+V3 ik(V3 root, V3 target, float l1, float l2, V3 pole) {
+    V3 d = target - root;
+    const float dist = std::clamp(length(d), .001f, l1 + l2 - .002f);
+    const V3 u = norm(d);
+    const float a = (l1 * l1 - l2 * l2 + dist * dist) / (2 * dist);
+    const float h = std::sqrt(std::max(0.0f, l1 * l1 - a * a));
+    V3 p = pole - u * dot(pole, u);
+    if (length(p) < 1e-4f)
+        p = {0, -1, 0};
+    return root + u * a + norm(p) * h;
+}
+
+// ------------------------------------------------------------ camera, lights, triangles
+struct Camera {
+    V3 pos, right, up, fwd;
+    float focal = 772, cx = 640, cy = 300;
+    void look(V3 from, V3 to) {
+        pos = from;
+        fwd = norm(to - from);
+        right = norm(cross(fwd, {0, 1, 0}));
+        up = cross(right, fwd);
+    }
+    V3 view(V3 p) const {
+        const V3 d = p - pos;
+        return {dot(d, right), dot(d, up), dot(d, fwd)};
+    }
+    SDL_FPoint screen(V3 v) const { return {cx + focal * v.x / v.z, cy - focal * v.y / v.z}; }
+} cam;
+
+struct Lighting {
+    V3 keyDir, fillDir;          // direction *toward* each light
+    V3 key, fill, rim, ambient;  // colours as 0..1 floats
+} lit;
+V3 col3(SDL_Color c) { return {c.r / 255.f, c.g / 255.f, c.b / 255.f}; }
+
+SDL_Color shadeVertex(V3 base, V3 n, V3 p) {
+    const V3 v = norm(cam.pos - p);
+    const float kd = std::max(0.0f, dot(n, lit.keyDir)), fd = std::max(0.0f, dot(n, lit.fillDir));
+    const float rim = std::pow(1 - std::max(0.0f, dot(n, v)), 3.0f);
+    V3 c = {base.x * (lit.ambient.x + lit.key.x * kd + lit.fill.x * fd),
+            base.y * (lit.ambient.y + lit.key.y * kd + lit.fill.y * fd),
+            base.z * (lit.ambient.z + lit.key.z * kd + lit.fill.z * fd)};
+    c = c + lit.rim * (rim * .9f);
+    return rgb(int(std::min(1.0f, c.x) * 255), int(std::min(1.0f, c.y) * 255), int(std::min(1.0f, c.z) * 255));
+}
+
+struct Tri {
+    SDL_Vertex v[3];
+    float depth;
+};
+std::vector<Tri> tris;      // sorted each frame
+std::vector<SDL_Vertex> vbuf;
+std::vector<int> ibuf;
+bool emissive = false;      // while true, colours are used as they are
+
+// One triangle in world space with per-vertex normals; back faces are culled.
+void tri(V3 a, V3 b, V3 c, V3 na, V3 nb, V3 nc, V3 base) {
+    V3 face = cross(b - a, c - a);
+    const V3 hint = na + nb + nc;
+    if (dot(face, hint) < 0)
+        face = face * -1;
+    const V3 centre = (a + b + c) * (1.f / 3);
+    if (dot(face, cam.pos - centre) <= 0)
+        return; // facing away
+    const V3 va = cam.view(a), vb = cam.view(b), vc = cam.view(c);
+    if (va.z < .2f || vb.z < .2f || vc.z < .2f)
+        return;
+    Tri t;
+    const V3 ps[3] = {va, vb, vc}, ws[3] = {a, b, c}, ns[3] = {na, nb, nc};
+    for (int i = 0; i < 3; ++i) {
+        t.v[i].position = cam.screen(ps[i]);
+        t.v[i].color = emissive ? rgb(int(clamp01(base.x) * 255), int(clamp01(base.y) * 255), int(clamp01(base.z) * 255))
+                                : shadeVertex(base, norm(ns[i]), ws[i]);
+        t.v[i].tex_coord = {0, 0};
+    }
+    t.depth = std::max({va.z, vb.z, vc.z}) * .5f + (va.z + vb.z + vc.z) / 6;
+    tris.push_back(t);
+}
+void flatTri(V3 a, V3 b, V3 c, V3 n, V3 base) { tri(a, b, c, n, n, n, base); }
+void flatQuad(V3 a, V3 b, V3 c, V3 d, V3 n, V3 base) {
+    flatTri(a, b, c, n, base);
+    flatTri(a, c, d, n, base);
+}
+// Draws everything queued so far, far to near, and empties the queue.
+void flushTris() {
+    std::sort(tris.begin(), tris.end(), [](const Tri &a, const Tri &b) { return a.depth > b.depth; });
+    vbuf.clear(), ibuf.clear();
+    for (const auto &t : tris) {
+        const int base = int(vbuf.size());
+        vbuf.insert(vbuf.end(), t.v, t.v + 3);
+        ibuf.insert(ibuf.end(), {base, base + 1, base + 2});
+    }
+    if (!vbuf.empty())
+        mesh(nullptr, vbuf, ibuf);
+    tris.clear();
+}
+
+// ------------------------------------------------------------ mesh builders
+// A box centred on `c` with half sizes along the frame's axes.
+void box(V3 c, const Frame &fr, float hx, float hy, float hz, V3 col) {
+    auto P = [&](float x, float y, float z) { return fr.at(c, x * hx, y * hy, z * hz); };
+    flatQuad(P(-1, -1, 1), P(1, -1, 1), P(1, 1, 1), P(-1, 1, 1), fr.f, col);
+    flatQuad(P(1, -1, -1), P(-1, -1, -1), P(-1, 1, -1), P(1, 1, -1), fr.f * -1, col);
+    flatQuad(P(1, -1, 1), P(1, -1, -1), P(1, 1, -1), P(1, 1, 1), fr.r, col);
+    flatQuad(P(-1, -1, -1), P(-1, -1, 1), P(-1, 1, 1), P(-1, 1, -1), fr.r * -1, col);
+    flatQuad(P(-1, 1, 1), P(1, 1, 1), P(1, 1, -1), P(-1, 1, -1), fr.u, col);
+    flatQuad(P(-1, -1, -1), P(1, -1, -1), P(1, -1, 1), P(-1, -1, 1), fr.u * -1, col);
+}
+void box(V3 c, float hx, float hy, float hz, V3 col) { box(c, Frame{}, hx, hy, hz, col); }
+// A box whose bottom and top faces differ in size (a tapered trunk).
+void frustum(V3 bottom, V3 top, V3 fwd, float bw, float bd, float tw, float td, V3 col) {
+    const Frame fr = frameFrom(top - bottom, fwd);
+    V3 b[4] = {fr.at(bottom, -bw, 0, bd), fr.at(bottom, bw, 0, bd), fr.at(bottom, bw, 0, -bd), fr.at(bottom, -bw, 0, -bd)};
+    V3 t[4] = {fr.at(top, -tw, 0, td), fr.at(top, tw, 0, td), fr.at(top, tw, 0, -td), fr.at(top, -tw, 0, -td)};
+    const V3 n[4] = {fr.f, fr.r, fr.f * -1, fr.r * -1};
+    for (int i = 0; i < 4; ++i) {
+        const int j = (i + 1) % 4;
+        flatQuad(b[i], b[j], t[j], t[i], n[i], col);
+    }
+    flatQuad(t[0], t[1], t[2], t[3], fr.u, col);
+    flatQuad(b[3], b[2], b[1], b[0], fr.u * -1, col);
+}
+// A tapered cylinder between two points, smooth shaded, with caps.
+void cylinder(V3 a, V3 b, float ra, float rb, V3 col, int sides = 8, bool caps = true) {
+    const V3 axis = norm(b - a);
+    const V3 side = std::abs(axis.y) < .9f ? V3{0, 1, 0} : V3{1, 0, 0};
+    const V3 e1 = norm(cross(axis, side)), e2 = cross(axis, e1);
+    for (int i = 0; i < sides; ++i) {
+        const float t0 = 2 * Pi * i / sides, t1 = 2 * Pi * (i + 1) / sides;
+        const V3 n0 = e1 * std::cos(t0) + e2 * std::sin(t0), n1 = e1 * std::cos(t1) + e2 * std::sin(t1);
+        const V3 a0 = a + n0 * ra, a1 = a + n1 * ra, b0 = b + n0 * rb, b1 = b + n1 * rb;
+        tri(a0, a1, b1, n0, n1, n1, col);
+        tri(a0, b1, b0, n0, n1, n0, col);
+        if (caps) {
+            flatTri(b, b0, b1, axis, col);
+            flatTri(a, a1, a0, axis * -1, col);
+        }
+    }
+}
+// An ellipsoid in a frame, smooth shaded.
+void ellipsoid(V3 c, const Frame &fr, float rx, float ry, float rz, V3 col, int slices = 10, int stacks = 6,
+               float fromLat = -Pi / 2) {
+    auto P = [&](float lat, float lon, V3 &n) {
+        const float x = std::cos(lat) * std::sin(lon), y = std::sin(lat), z = std::cos(lat) * std::cos(lon);
+        n = fr.dir(x / rx, y / ry, z / rz);
+        return fr.at(c, x * rx, y * ry, z * rz);
+    };
+    for (int i = 0; i < stacks; ++i) {
+        const float la0 = fromLat + (Pi / 2 - fromLat) * i / stacks, la1 = fromLat + (Pi / 2 - fromLat) * (i + 1) / stacks;
+        for (int j = 0; j < slices; ++j) {
+            const float lo0 = 2 * Pi * j / slices, lo1 = 2 * Pi * (j + 1) / slices;
+            V3 n00, n01, n10, n11;
+            const V3 p00 = P(la0, lo0, n00), p01 = P(la0, lo1, n01), p10 = P(la1, lo0, n10), p11 = P(la1, lo1, n11);
+            tri(p00, p01, p11, n00, n01, n11, col);
+            tri(p00, p11, p10, n00, n11, n10, col);
+        }
+    }
+}
+void sphere(V3 c, float r, V3 col, int slices = 8, int stacks = 5) { ellipsoid(c, Frame{}, r, r, r, col, slices, stacks); }
+// A star-shaped outline r(angle) extruded `depth` along the frame's f axis.
+template <class Outline>
+void slab(V3 c, const Frame &fr, Outline r, int steps, float depth, V3 col, V3 rimCol) {
+    std::vector<V3> front, back;
+    for (int i = 0; i < steps; ++i) {
+        const float a = 2 * Pi * i / steps;
+        const float rad = r(a);
+        const float x = std::cos(a) * rad, y = std::sin(a) * rad;
+        front.push_back(fr.at(c, x, y, depth / 2));
+        back.push_back(fr.at(c, x, y, -depth / 2));
+    }
+    const V3 cf = fr.at(c, 0, 0, depth / 2), cb = fr.at(c, 0, 0, -depth / 2);
+    for (int i = 0; i < steps; ++i) {
+        const int j = (i + 1) % steps;
+        flatTri(cf, front[size_t(i)], front[size_t(j)], fr.f, col);
+        flatTri(cb, back[size_t(j)], back[size_t(i)], fr.f * -1, col);
+        const V3 out = norm((front[size_t(i)] + front[size_t(j)]) * .5f - cf);
+        flatQuad(front[size_t(i)], back[size_t(i)], back[size_t(j)], front[size_t(j)], out, rimCol);
+    }
+}
+
+// ------------------------------------------------------------ memory of the show
 struct Memory {
     int hits = 0, misses = 0;
     double lastHit = -1e9, lastMiss = -1e9, powerStart = -1e9, lastTime = -1e9;
     bool power = false;
 } mem;
 
-float frac(double v) { return float(v - std::floor(v)); }
-float clamp01(float v) { return std::clamp(v, 0.0f, 1.0f); }
-float ease(double age, double life) { // 1 at the event, 0 after `life`
-    if (age < 0 || age > life)
-        return 0;
-    const float t = float(1 - age / life);
-    return t * t;
-}
-P add(P a, P b) { return {a.x + b.x, a.y + b.y}; }
-P sub(P a, P b) { return {a.x - b.x, a.y - b.y}; }
-P scale(P a, float s) { return {a.x * s, a.y * s}; }
-P lerp(P a, P b, float t) { return {a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t}; }
-float len(P a) { return std::hypot(a.x, a.y); }
-// Unit vector at `a` radians from straight down, turning toward screen right.
-P dir(float a) { return {std::sin(a), std::cos(a)}; }
-SDL_Color rgb(int r, int g, int b, int a = 255) { return {Uint8(r), Uint8(g), Uint8(b), Uint8(a)}; }
-SDL_Color shade(SDL_Color c, float k) { return mix(c, rgb(6, 6, 10, c.a), k); }
-
-// Two-bone IK: the joint between `root` and `target`, bent to the side `bend`
-// (+1 bends to the right of the root->target line, -1 to the left).
-P joint(P root, P target, float l1, float l2, float bend) {
-    P d = sub(target, root);
-    float dist = std::clamp(len(d), .001f, l1 + l2 - .01f);
-    P u = scale(d, 1 / std::max(len(d), .001f));
-    float a = (l1 * l1 - l2 * l2 + dist * dist) / (2 * dist);
-    float h = std::sqrt(std::max(0.0f, l1 * l1 - a * a));
-    P base = add(root, scale(u, a));
-    return add(base, scale(P{-u.y, u.x}, h * bend));
-}
-
-// Lighting of the moment, shared by everything on stage.
-struct Light {
-    SDL_Color key, fill; // key from the truss, fill from the floor wash
-    float level;         // overall brightness
+struct Show { // what everyone reacts to this frame
+    double time, beat;
+    float energy, ph, hit, miss;
+    bool power, failed, danger;
+    uint8_t held;
 };
 
-void limb(P a, P b, float w, SDL_Color c, const Light &l) {
-    thickLine(a.x, a.y, b.x, b.y, w, c);
-    disc(a.x, a.y, w / 2, w / 2, c, c, 12);
-    disc(b.x, b.y, w / 2, w / 2, c, c, 12);
-    // Rim light: the truss is above and to the left of everyone.
-    const SDL_Color rim = alpha(l.key, .28f * l.level);
-    thickLine(a.x - w * .22f, a.y - w * .15f, b.x - w * .22f, b.y - w * .15f, w * .18f, rim);
-}
-void blob(P c, float rx, float ry, SDL_Color col, const Light &l) {
-    disc(c.x, c.y, rx, ry, col, shade(col, .25f), 18);
-    disc(c.x - rx * .3f, c.y - ry * .35f, rx * .45f, ry * .35f, alpha(l.key, .35f * l.level),
-         alpha(l.key, 0), 14);
-}
-
-// ------------------------------------------------------------ a person
-struct Look {
-    SDL_Color skin, shirt, sleeve, pants, shoes, hair;
-    int hairStyle; // 0 short spiky, 1 long, 2 beanie
+// ------------------------------------------------------------ people
+struct Style {
+    V3 skin, top, jacket, pants, shoes, hair;
+    int hairStyle; // 0 platinum crop, 1 long, 2 beanie and beard, 3 bob
+    bool sleeves;  // jacket sleeves down to the wrist
 };
-struct Body {
-    P hip, chest, neck, head, shoulderL, shoulderR;
-    float s;
+struct Rig {
+    Frame body, head;
+    V3 pelvis, chest, neck, headC, shoulderL, shoulderR, hipL, hipR, footL, footR;
 };
-// Feet at `feet`, `s` = scale (1 = about 250 px tall), lean in radians
-// (+ = toward screen right), `crouch` in px of knee bend, `nod` head tilt.
-Body pose(P feet, float s, float lean, float crouch, float nod) {
-    Body b;
-    b.s = s;
-    b.hip = {feet.x, feet.y - (118 - crouch) * s};
-    P up = dir(Pi + lean);
-    b.chest = add(b.hip, scale(up, 50 * s));
-    b.neck = add(b.hip, scale(up, 86 * s));
-    b.head = add(b.neck, scale(dir(Pi + lean + nod), 26 * s));
-    const P side = {24 * s * std::cos(lean), -24 * s * std::sin(lean)}; // across the shoulders
-    b.shoulderL = sub(add(b.hip, scale(up, 80 * s)), side);
-    b.shoulderR = add(add(b.hip, scale(up, 80 * s)), side);
-    return b;
+// root = point between the feet; yaw turns toward screen right; lean tips the
+// spine toward the audience; nod tips the head; crouch bends the knees.
+Rig rig(V3 root, float yaw, float lean, float roll, float crouch, float nod, float stance) {
+    Rig k;
+    const V3 F = {std::sin(yaw), 0, std::cos(yaw)}, R = {std::cos(yaw), 0, -std::sin(yaw)};
+    k.pelvis = root + V3{0, .95f - crouch, 0};
+    V3 up = norm(V3{0, std::cos(lean), 0} + F * std::sin(lean) + R * std::sin(roll));
+    k.body = frameFrom(up, F);
+    k.chest = k.pelvis + k.body.u * .32f;
+    k.neck = k.pelvis + k.body.u * .55f;
+    k.head = frameFrom(norm(k.body.u * std::cos(nod) + k.body.f * std::sin(nod)), k.body.f);
+    k.headC = k.neck + k.head.u * .15f;
+    const V3 shoulders = k.pelvis + k.body.u * .5f;
+    k.shoulderL = shoulders - k.body.r * .2f; // screen left: the character's right side
+    k.shoulderR = shoulders + k.body.r * .2f;
+    k.hipL = k.pelvis - R * .1f, k.hipR = k.pelvis + R * .1f;
+    k.footL = root - R * stance + F * .05f, k.footR = root + R * stance - F * .05f;
+    return k;
 }
-void legs(const Body &b, P feet, float stance, const Look &lk, const Light &l) {
-    const float s = b.s;
+void legs(const Rig &k, const Style &s) {
     for (int side : {-1, 1}) {
-        P hip = {b.hip.x + side * 11 * s, b.hip.y};
-        P foot = {feet.x + side * stance * s, feet.y};
-        P knee = joint(hip, foot, 60 * s, 62 * s, side < 0 ? 1.f : -1.f);
-        limb(hip, knee, 27 * s, lk.pants, l);
-        limb(knee, foot, 22 * s, shade(lk.pants, .12f), l);
-        disc(foot.x + side * 7 * s, foot.y - 3 * s, 16 * s, 8 * s, lk.shoes, shade(lk.shoes, .3f), 14);
+        const V3 hip = side < 0 ? k.hipL : k.hipR, foot = side < 0 ? k.footL : k.footR;
+        const V3 ankle = foot + V3{0, .08f, 0};
+        const V3 knee = ik(hip, ankle, .44f, .44f, k.body.f + k.body.r * (side * .4f));
+        cylinder(hip, knee, .09f, .075f, s.pants);
+        cylinder(knee, ankle, .072f, .058f, s.pants);
+        box(foot + V3{0, .055f, .04f}, frameFrom({0, 1, 0}, k.body.f), .06f, .055f, .12f, s.shoes);
     }
 }
-void torso(const Body &b, const Look &lk, const Light &l) {
-    const float s = b.s;
-    // A tapered trunk: hips, waist, chest.
-    P up = sub(b.neck, b.hip);
-    float ul = std::max(len(up), .001f);
-    P n = {-up.y / ul, up.x / ul};
-    auto at = [&](float t, float w) { return std::pair<P, P>{add(lerp(b.hip, b.neck, t), scale(n, w * s)),
-                                                            sub(lerp(b.hip, b.neck, t), scale(n, w * s))}; };
-    auto [h1, h2] = at(0, 24);
-    auto [w1, w2] = at(.45f, 22);
-    auto [c1, c2] = at(.95f, 30);
-    quad(h1, w1, w2, h2, lk.pants, lk.shirt, lk.shirt, lk.pants);
-    quad(w1, c1, c2, w2, lk.shirt, shade(lk.shirt, .1f), shade(lk.shirt, .1f), lk.shirt);
-    thickLine(c2.x, c2.y, w2.x, w2.y, 3 * s, alpha(l.key, .3f * l.level)); // rim on the lit side
-    limb(b.neck, lerp(b.neck, b.head, .4f), 9 * s, shade(lk.skin, .2f), l);
-}
-void head(const Body &b, const Look &lk, const Light &l, float swing) {
-    const float s = b.s;
-    P h = b.head;
-    if (lk.hairStyle == 1) { // long hair, flying with the headbang
-        for (int side : {-1, 1})
-            for (int i = 0; i < 3; ++i) {
-                P root = {h.x + side * (8 + i * 4) * s, h.y - 8 * s};
-                P tip = {h.x + side * (17 + i * 5) * s + swing * 16 * s, h.y + (40 - i * 4) * s - std::abs(swing) * 12 * s};
-                limb(root, tip, 9 * s, lk.hair, l);
-            }
+void trunk(const Rig &k, const Style &s) {
+    box(k.pelvis, k.body, .17f, .09f, .11f, s.pants);
+    frustum(k.pelvis + k.body.u * .06f, k.pelvis + k.body.u * .5f, k.body.f, .15f, .1f, .21f, .12f, s.top);
+    // An open jacket: two panels over the shirt.
+    for (int side : {-1, 1}) {
+        const V3 b = k.pelvis + k.body.u * .07f + k.body.r * (side * .12f) + k.body.f * .02f;
+        const V3 t = k.pelvis + k.body.u * .5f + k.body.r * (side * .16f) + k.body.f * .02f;
+        frustum(b, t, k.body.f, .055f, .1f, .07f, .12f, s.jacket);
     }
-    blob(h, 15 * s, 18 * s, lk.skin, l);
-    if (lk.hairStyle == 0) { // short, spiky, bleached
-        disc(h.x, h.y - 9 * s, 16 * s, 11 * s, lk.hair, shade(lk.hair, .15f), 16);
+    cylinder(k.neck - k.body.u * .04f, k.headC - k.head.u * .06f, .05f, .045f, s.skin, 6);
+}
+void head(const Rig &k, const Style &s, float swing) {
+    const Frame &h = k.head;
+    const V3 c = k.headC;
+    ellipsoid(c, h, .1f, .125f, .11f, s.skin);
+    box(h.at(c, 0, .01f, .1f), h, .085f, .02f, .02f, {.05f, .05f, .07f}); // dark glasses
+    box(h.at(c, 0, -.04f, .11f), h, .015f, .025f, .02f, s.skin);          // nose
+    switch (s.hairStyle) {
+    case 0: { // platinum crop with a few spikes
+        ellipsoid(h.at(c, 0, .03f, -.01f), h, .108f, .11f, .118f, s.hair, 10, 4, 0);
         for (int i = 0; i < 5; ++i) {
-            float a = Pi + (i - 2) * .38f;
-            P root = add(h, scale(dir(a), 12 * s));
-            P tip = add(h, scale(dir(a + swing * .2f + .25f), 22 * s));
-            limb(root, tip, 7 * s, lk.hair, l);
+            const float a = (i - 2) * .35f;
+            const V3 base = h.at(c, std::sin(a) * .07f, .1f, -.02f + std::cos(a) * .03f);
+            cylinder(base, base + h.dir(std::sin(a) * .05f, .07f, -.05f + swing * .02f), .03f, .004f, s.hair, 4, false);
         }
-    } else if (lk.hairStyle == 1) {
-        disc(h.x, h.y - 9 * s, 16 * s, 11 * s, lk.hair, shade(lk.hair, .2f), 16);
-    } else { // beanie
-        disc(h.x, h.y - 8 * s, 16 * s, 13 * s, lk.hair, shade(lk.hair, .25f), 16);
-        thickLine(h.x - 16 * s, h.y - 3 * s, h.x + 16 * s, h.y - 3 * s, 5 * s, shade(lk.hair, -.3f));
+        break;
     }
-    // Dark lenses: nobody needs to see eyes this far back, and it reads as cool.
-    thickLine(h.x - 9 * s, h.y + 1 * s, h.x + 9 * s, h.y + 1 * s, 4 * s, rgb(12, 12, 16));
+    case 1: { // long hair: a cap and a curtain that flies with the headbang
+        ellipsoid(h.at(c, 0, .025f, -.01f), h, .112f, .115f, .12f, s.hair, 10, 4, 0);
+        const V3 back = h.at(c, 0, -.02f, -.07f);
+        for (int side : {-1, 1}) {
+            const V3 top = h.at(c, side * .095f, .02f, -.01f);
+            const V3 tip = top + V3{side * .02f + swing * .12f, -.32f + std::abs(swing) * .1f, .05f - swing * .02f};
+            frustum(top, tip, h.f, .02f, .05f, .03f, .03f, s.hair);
+        }
+        frustum(back, back + V3{swing * .1f, -.34f, -.03f}, h.f * -1, .1f, .03f, .12f, .02f, s.hair);
+        break;
+    }
+    case 2: { // beanie and a beard
+        ellipsoid(h.at(c, 0, .04f, -.01f), h, .112f, .12f, .12f, s.hair, 10, 4, 0);
+        cylinder(h.at(c, 0, .03f, -.01f), h.at(c, 0, .07f, -.01f), .118f, .118f, s.hair * .7f, 10);
+        box(h.at(c, 0, -.09f, .06f), h, .085f, .055f, .06f, {.2f, .12f, .07f});
+        break;
+    }
+    default: { // bob cut
+        ellipsoid(h.at(c, 0, .025f, -.01f), h, .115f, .12f, .122f, s.hair, 10, 4, 0);
+        for (int side : {-1, 1})
+            box(h.at(c, side * .1f, -.05f, -.01f), h, .025f, .08f, .09f, s.hair);
+        box(h.at(c, 0, -.04f, -.09f), h, .1f, .09f, .03f, s.hair);
+    }
+    }
 }
-void arm(P shoulder, P hand, float bend, const Body &b, const Look &lk, const Light &l) {
-    const float s = b.s;
-    P elbow = joint(shoulder, hand, 44 * s, 44 * s, bend);
-    limb(shoulder, elbow, 19 * s, lk.sleeve, l);
-    limb(elbow, hand, 15 * s, lk.skin, l);
-    disc(hand.x, hand.y, 9 * s, 9 * s, lk.skin, shade(lk.skin, .2f), 10);
+void arm(V3 shoulder, V3 hand, V3 pole, const Style &s) {
+    const V3 elbow = ik(shoulder, hand, .29f, .27f, pole);
+    cylinder(shoulder, elbow, .062f, .052f, s.sleeves ? s.jacket : s.skin);
+    cylinder(elbow, hand, .048f, .04f, s.sleeves ? s.jacket : s.skin);
+    sphere(hand, .045f, s.skin, 6, 4);
+}
+
+// A guitar or bass on the body, neck rising toward screen right.
+struct Axe {
+    V3 bodyC, along, across, face;
+};
+Axe strap(const Rig &k, float neckUp) {
+    Axe g;
+    g.face = k.body.f;
+    g.along = norm(k.body.r * std::cos(neckUp) + k.body.u * std::sin(neckUp));
+    g.across = cross(g.face, g.along);
+    g.bodyC = k.pelvis + k.body.f * .16f - k.body.r * .08f + k.body.u * .04f;
+    return g;
+}
+void axe(const Axe &g, float neckLen, V3 finish, bool bass) {
+    Frame fr;
+    fr.r = g.along, fr.u = g.across, fr.f = g.face;
+    // An original offset outline: a big lower bout, a smaller upper horn.
+    auto outline = [bass](float a) {
+        const float horn = std::max(0.0f, std::cos(a - 1.25f));
+        const float lower = std::max(0.0f, std::cos(a - 3.6f));
+        return (bass ? .2f : .18f) * (1 + .3f * std::pow(horn, 6.0f) + .2f * lower - .12f * std::cos(2 * a));
+    };
+    slab(fr.at(g.bodyC, -.04f, 0, 0), fr, outline, 28, .05f, finish, finish * .55f);
+    slab(fr.at(g.bodyC, -.05f, -.02f, .028f), fr, [](float a) { return .1f * (1 - .2f * std::cos(2 * a)); }, 16,
+         .006f, {.92f, .92f, .9f}, {.7f, .7f, .68f});
+    box(fr.at(g.bodyC, .02f, 0, .03f), fr, .015f, .045f, .008f, {.08f, .08f, .08f}); // pickups
+    box(fr.at(g.bodyC, -.08f, 0, .03f), fr, .015f, .045f, .008f, {.08f, .08f, .08f});
+    box(fr.at(g.bodyC, -.15f, 0, .03f), fr, .012f, .05f, .01f, {.75f, .75f, .78f}); // bridge
+    const float half = neckLen / 2;
+    box(fr.at(g.bodyC, .12f + half, 0, .01f), fr, half, .028f, .016f, {.36f, .22f, .12f});
+    box(fr.at(g.bodyC, .12f + half, 0, .028f), fr, half, .026f, .003f, {.1f, .07f, .06f}); // fretboard
+    box(fr.at(g.bodyC, .2f + neckLen, .01f, .005f), fr, .08f, .04f, .012f, finish * .5f); // headstock
+}
+
+void shadow(V3 at, float rx, float rz) {
+    std::vector<SDL_Vertex> v;
+    std::vector<int> idx;
+    const V3 c = cam.view(at + V3{0, .01f, 0});
+    if (c.z < .3f)
+        return;
+    v.push_back({cam.screen(c), rgb(0, 0, 0, 150), {0, 0}});
+    for (int i = 0; i <= 16; ++i) {
+        const float a = 2 * Pi * i / 16;
+        const V3 p = cam.view(at + V3{std::cos(a) * rx, .01f, std::sin(a) * rz});
+        v.push_back({cam.screen(p), rgb(0, 0, 0, 0), {0, 0}});
+        if (i)
+            idx.insert(idx.end(), {0, i, i + 1});
+    }
+    mesh(nullptr, v, idx);
+}
+
+// ------------------------------------------------------------ the band
+const Style ninaS{{.93f, .78f, .68f}, {.12f, .12f, .14f}, {.22f, .42f, .28f}, {.16f, .16f, .2f}, {.9f, .9f, .9f},
+                  {.96f, .94f, .86f}, 0, true};
+const Style caioS{{.78f, .58f, .45f}, {.62f, .14f, .16f}, {.1f, .1f, .11f}, {.2f, .26f, .4f}, {.12f, .1f, .09f},
+                  {.1f, .07f, .06f}, 1, false};
+const Style lunaS{{.88f, .7f, .6f}, {.2f, .16f, .3f}, {.86f, .86f, .88f}, {.12f, .12f, .14f}, {.6f, .1f, .14f},
+                  {.5f, .3f, .82f}, 3, true};
+const Style bentoS{{.6f, .42f, .32f}, {.85f, .82f, .76f}, {.85f, .82f, .76f}, {.18f, .18f, .2f}, {.1f, .1f, .1f},
+                   {.85f, .45f, .1f}, 2, false};
+
+float bangOf(const Show &s, float amount) { return amount * std::pow(1 - s.ph, 3.0f); }
+
+void singer(const Show &s) {
+    const V3 root = {-2.35f, 0, .15f};
+    const float nod = s.failed ? .45f : .05f + bangOf(s, .3f * s.energy);
+    Rig k = rig(root, .3f, s.failed ? .2f : .05f, .04f * std::sin(float(s.beat) * Pi), s.failed ? .1f : .03f + .05f * s.energy * (1 - s.ph),
+                nod, .17f);
+    legs(k, ninaS);
+    trunk(k, ninaS);
+    head(k, ninaS, 0);
+    // Mic stand in front of her.
+    const V3 base = root + k.body.f * .38f;
+    const V3 mic = k.headC + k.head.f * .17f + k.head.u * -.05f;
+    cylinder(base, base + V3{0, .02f, 0}, .2f, .2f, {.15f, .15f, .17f}, 10);
+    cylinder(base, {base.x, mic.y - .15f, base.z}, .012f, .012f, {.3f, .3f, .32f}, 5, false);
+    cylinder({base.x, mic.y - .15f, base.z}, mic, .01f, .01f, {.3f, .3f, .32f}, 5, false);
+    sphere(mic, .035f, {.5f, .5f, .52f}, 6, 4);
+    arm(k.shoulderR, mic + V3{0, -.07f, 0}, k.body.r + V3{0, -1, 0}, ninaS);
+    V3 hand;
+    if (s.failed)
+        hand = k.shoulderL + V3{-.05f, -.5f, .05f};
+    else if (s.power || s.energy > .55f) {
+        const float pump = s.power ? 1 : (s.ph < .5f ? 1 - s.ph * 2 : 0);
+        hand = k.shoulderL + k.body.r * -.15f + V3{0, -.15f + .65f * pump, .15f};
+    } else
+        hand = k.shoulderL + V3{-.12f, -.42f + .04f * std::sin(float(s.beat) * Pi), .12f};
+    arm(k.shoulderL, hand, k.body.r * -1 + V3{0, -1, 0}, ninaS);
+}
+
+void guitarist(const Show &s) {
+    float hop = 0;
+    if (s.power) {
+        const float h = frac(s.beat / 2);
+        hop = h < .5f ? std::sin(Pi * h * 2) * .28f : 0;
+    }
+    const V3 root = {2.3f, hop, -.1f};
+    const float nod = s.failed ? .5f : .06f + bangOf(s, .45f * s.energy) - .35f * s.miss;
+    Rig k = rig(root, -.32f, s.failed ? .25f : .08f + bangOf(s, .12f * s.energy) - .2f * s.miss, 0,
+                s.failed ? .12f : .04f + .07f * s.energy * (1 - s.ph) + (s.power ? .06f : 0), nod, s.power ? .26f : .2f);
+    legs(k, caioS);
+    trunk(k, caioS);
+    head(k, caioS, s.failed ? 0 : (1 - s.ph) * s.energy * .8f - s.miss);
+    const Axe g = strap(k, s.failed ? -.1f : (s.power ? 1.05f : .5f + .06f * std::sin(float(s.beat) * Pi * .5f)));
+    axe(g, .48f, {.12f, .62f, .6f}, false);
+    int lane = -1;
+    for (int i = 0; i < 5; ++i)
+        if (s.held & (1 << i)) {
+            lane = i;
+            break;
+        }
+    const float along = lane < 0 ? .32f : .5f - lane * .08f;
+    const V3 fret = g.bodyC + g.along * (.12f + .48f * (1 - along)) + g.face * .04f - g.across * .03f;
+    const V3 pick = g.bodyC + g.along * -.04f + g.face * .07f + g.across * (.04f - .12f * s.hit);
+    arm(k.shoulderR, fret, k.body.r + V3{0, -1, -.3f}, caioS);
+    arm(k.shoulderL, pick, k.body.r * -1 + V3{0, -.4f, -.6f}, caioS);
+}
+
+void bassist(const Show &s) {
+    const V3 root = {-3.9f, 0, -2.7f};
+    const float sway = std::sin(float(s.beat) * Pi * .5f);
+    Rig k = rig(root, .45f, s.failed ? .2f : .04f + bangOf(s, .06f * s.energy), .05f * sway,
+                s.failed ? .08f : .03f + .05f * s.energy * (1 - s.ph), s.failed ? .4f : .04f + bangOf(s, .22f * s.energy),
+                .22f);
+    legs(k, lunaS);
+    trunk(k, lunaS);
+    head(k, lunaS, 0);
+    const Axe g = strap(k, s.failed ? -.1f : .35f + (s.power ? .3f : 0));
+    axe(g, .66f, {.62f, .1f, .14f}, true);
+    const float walk = frac(s.beat / 4);
+    const V3 fret = g.bodyC + g.along * (.4f + .2f * std::sin(walk * 2 * Pi)) + g.face * .04f - g.across * .03f;
+    const V3 pluck = g.bodyC + g.along * -.02f + g.face * .07f + g.across * (.02f - .06f * (1 - frac(s.beat * 2)));
+    arm(k.shoulderR, fret, k.body.r + V3{0, -1, -.3f}, lunaS);
+    arm(k.shoulderL, pluck, k.body.r * -1 + V3{0, -.4f, -.6f}, lunaS);
+}
+
+void drummer(const Show &s) {
+    const V3 seat = {0, .5f, -4.15f};
+    const Frame fr; // facing the audience
+    const int beatNo = int(std::floor(s.beat));
+    const float ph2 = frac(s.beat * 2);
+    // Kit: kick at the front, toms above it, snare and hats to his left (screen right).
+    const V3 shell = {.62f, .08f, .12f}, headCol = {.9f, .88f, .84f}, brass = {.86f, .66f, .28f};
+    const V3 kick = seat + V3{0, .02f, .62f};
+    cylinder(kick + V3{0, .28f, -.18f}, kick + V3{0, .28f, .2f}, .28f, .28f, shell, 14);
+    cylinder(kick + V3{0, .28f, .2f}, kick + V3{0, .28f, .205f}, .26f, .26f, headCol, 14);
+    const V3 snare = seat + V3{.3f, .62f, .38f}, tom1 = seat + V3{-.14f, .82f, .48f}, tom2 = seat + V3{.14f, .82f, .48f};
+    const V3 floorTom = seat + V3{-.42f, .5f, .3f};
+    for (V3 d : {snare, tom1, tom2, floorTom}) {
+        cylinder(d - V3{0, .07f, 0}, d + V3{0, .07f, 0}, .14f, .14f, d.x == snare.x ? V3{.8f, .8f, .82f} : shell, 10);
+        cylinder(d + V3{0, .07f, 0}, d + V3{0, .075f, 0}, .135f, .135f, headCol, 10, true);
+    }
+    const float crashWob = s.failed ? 0 : ease(std::fmod(s.beat, 4.0), .9) * s.energy;
+    const V3 hat = seat + V3{.55f, .78f, .3f}, crash = seat + V3{.5f, 1.25f, .2f}, ride = seat + V3{-.6f, 1.05f, .25f};
+    for (V3 c : {hat, crash, ride}) {
+        cylinder(c - V3{0, .9f, 0}, c, .012f, .012f, {.3f, .3f, .32f}, 4, false);
+        const float tilt = c.y == crash.y ? .08f + .1f * crashWob : .04f;
+        const Frame cf = frameFrom({0, 1, tilt}, {0, 0, 1});
+        ellipsoid(c, cf, c.y == crash.y ? .26f : .2f, .012f, c.y == crash.y ? .26f : .2f, brass, 12, 2);
+    }
+    // Drummer on his stool.
+    cylinder(seat - V3{0, .45f, 0}, seat - V3{0, .02f, 0}, .04f, .04f, {.2f, .2f, .22f}, 5);
+    cylinder(seat - V3{0, .03f, 0}, seat, .17f, .17f, {.1f, .1f, .1f}, 10);
+    Rig k = rig(seat + V3{0, -.95f + .05f, 0}, 0, .08f + bangOf(s, .1f * s.energy), 0, 0,
+                s.failed ? .4f : .06f + bangOf(s, .35f * s.energy), .2f);
+    k.footL = seat + V3{-.25f, -.5f, .45f}, k.footR = seat + V3{.25f, -.5f, .45f};
+    k.hipL = seat + V3{-.1f, .05f, 0}, k.hipR = seat + V3{.1f, .05f, 0};
+    for (int side : {-1, 1}) {
+        const V3 hip = side < 0 ? k.hipL : k.hipR, foot = side < 0 ? k.footL : k.footR;
+        const V3 knee = hip + V3{side * .06f, .05f, .42f};
+        cylinder(hip, knee, .09f, .075f, bentoS.pants);
+        cylinder(knee, foot + V3{0, .08f, 0}, .072f, .058f, bentoS.pants);
+        box(foot + V3{0, .05f, .04f}, .06f, .05f, .11f, bentoS.shoes);
+    }
+    trunk(k, bentoS);
+    head(k, bentoS, 0);
+    const float lift = s.failed ? .1f : std::sin(Pi * ph2) * (.1f + .14f * s.energy);
+    const bool backbeat = beatNo % 2 == 1 && ph2 < .5f;
+    const bool crashHit = beatNo % 4 == 0 && frac(s.beat) < .5f && s.energy > .45f;
+    const V3 rightT = (crashHit ? crash : hat) + V3{-.1f, .06f + lift, 0};
+    const V3 leftT = snare + V3{-.06f, .1f + (backbeat ? lift : lift * .3f), -.05f};
+    // His right hand rides the hats crossed over; screen left shoulder is his right.
+    for (auto [sh, hand] : {std::pair{k.shoulderL, rightT}, std::pair{k.shoulderR, leftT}}) {
+        const V3 elbow = ik(sh, hand, .29f, .27f, V3{sh.x < seat.x ? -1.f : 1.f, -1, -.2f});
+        cylinder(sh, elbow, .062f, .052f, bentoS.skin);
+        cylinder(elbow, hand, .048f, .04f, bentoS.skin);
+        sphere(hand, .045f, bentoS.skin, 6, 4);
+        const V3 stick = norm(hand - elbow);
+        cylinder(hand, hand + stick * .32f, .01f, .008f, {.85f, .75f, .55f}, 4, false);
+    }
+    (void)fr;
 }
 
 // ------------------------------------------------------------ the set
-void backdrop(const Cues &c, const Light &l, float energy) {
-    const SDL_Color top = rgb(10, 10, 16), floorBack = rgb(24, 22, 28), floorFront = rgb(12, 11, 14);
-    quad({0, 0}, {W, 0}, {W, 300}, {0, 300}, top, top, shade(l.fill, .82f), shade(l.fill, .82f));
-    // LED wall behind the drum riser: an equaliser that rides the beat.
-    const float ph = frac(c.beat);
-    const int cols = 30, rows = 9;
-    const float x0 = 300, y0 = 44, cw = 680.f / cols, ch = 220.f / rows;
-    rect(x0 - 6, y0 - 6, 680 + 12, 220 + 12, rgb(4, 4, 6));
+std::array<V3, 5> lampPos;
+void stageSet(const Show &s, SDL_Color key) {
+    const V3 deck = {.13f, .12f, .14f}, metal = {.32f, .33f, .36f}, black = {.06f, .06f, .07f};
+    // Floor, in planks so the light pools have something to fall across.
+    for (int i = 0; i < 12; ++i) {
+        const float x0 = -10 + i * (20.f / 12), x1 = x0 + 20.f / 12;
+        flatQuad({x0, 0, 1.3f}, {x1, 0, 1.3f}, {x1, 0, -6}, {x0, 0, -6}, {0, 1, 0}, i % 2 ? deck : deck * .85f);
+    }
+    flatQuad({-10, -1.5f, 1.3f}, {10, -1.5f, 1.3f}, {10, 0, 1.3f}, {-10, 0, 1.3f}, {0, 0, 1}, black);
+    // Back wall and the LED screen on it (emissive).
+    flatQuad({-12, 0, -6}, {12, 0, -6}, {12, 8, -6}, {-12, 8, -6}, {0, 0, 1}, {.04f, .04f, .05f});
+    emissive = true;
+    const int cols = 26, rows = 10;
+    const float x0 = -5.2f, y0 = .8f, cw = 10.4f / cols, ch = 3.6f / rows;
+    const V3 on = col3(key);
     for (int i = 0; i < cols; ++i) {
-        float wave = .5f + .5f * std::sin(float(c.beat) * Pi * .5f + i * .55f);
-        float hgt = c.failed ? 0 : (.15f + .75f * energy * wave) * (.75f + .25f * (1 - ph));
-        int lit = int(std::round(hgt * rows));
+        const float wave = .5f + .5f * std::sin(float(s.beat) * Pi * .5f + i * .5f);
+        const float level = s.failed ? 0 : (.12f + .8f * s.energy * wave) * (.7f + .3f * (1 - s.ph));
+        const int litRows = int(std::round(level * rows));
         for (int r = 0; r < rows; ++r) {
-            bool on = rows - r <= lit;
-            SDL_Color col = on ? alpha(mix(l.key, rgb(255, 255, 255), r == rows - lit ? .4f : 0), .28f + .3f * energy)
-                               : rgb(14, 14, 20, 255);
-            rect(x0 + i * cw + 1, y0 + r * ch + 1, cw - 2, ch - 2, col);
+            const bool lit = r < litRows;
+            const float glowK = lit ? (r == litRows - 1 ? 1.f : .45f + .35f * s.energy) : .06f;
+            const V3 c = lit ? on * glowK + V3{.15f, .15f, .15f} * (r == litRows - 1 ? 1.f : 0.f) : V3{.05f, .05f, .07f};
+            const float x = x0 + i * cw, y = y0 + r * ch;
+            flatQuad({x + .02f, y + .02f, -5.95f}, {x + cw - .02f, y + .02f, -5.95f}, {x + cw - .02f, y + ch - .02f, -5.95f},
+                     {x + .02f, y + ch - .02f, -5.95f}, {0, 0, 1}, c);
         }
     }
-    // Stage floor in perspective, toward the far end of the highway.
-    quad({0, 300}, {W, 300}, {W, 440}, {0, 440}, floorBack, floorBack, floorFront, floorFront);
-    for (int i = -8; i <= 8; ++i) {
-        float xb = 640 + i * 70.f, xf = 640 + i * 150.f;
-        thickLine(xb, 300, xf, 440, 1.5f, rgb(0, 0, 0, 90));
+    emissive = false;
+    // Drum riser.
+    box({0, .25f, -4.2f}, 1.7f, .25f, 1.1f, {.1f, .1f, .12f});
+    // Amps behind the strings, speaker stacks at the wings.
+    for (V3 a : {V3{3.4f, .65f, -2.2f}, V3{-5.0f, .65f, -3.8f}}) {
+        box(a, .55f, .65f, .3f, black);
+        box(a + V3{0, -.05f, .31f}, .48f, .5f, .01f, {.12f, .12f, .13f});
+        box(a + V3{0, .72f, 0}, .55f, .1f, .3f, {.18f, .16f, .14f});
     }
-    // The lip of the stage and the pit below it.
-    rect(0, 438, W, 6, alpha(l.key, .35f * l.level));
-    quad({0, 444}, {W, 444}, {W, H}, {0, H}, rgb(8, 8, 10), rgb(8, 8, 10), rgb(3, 3, 4), rgb(3, 3, 4));
-}
-void truss(const Cues &c, const Light &l, float energy, std::array<P, 5> &lamps) {
-    const SDL_Color metal = rgb(70, 72, 80);
-    for (float y : {14.f, 30.f})
-        thickLine(250, y, 1030, y, 3, metal);
-    for (int i = 0; i <= 26; ++i) {
-        float x = 250 + i * 30.f;
-        thickLine(x, 14, x + 15, 30, 2, metal);
-        thickLine(x + 15, 30, x + 30, 14, 2, metal);
-    }
-    const float xs[5] = {330, 470, 640, 810, 950};
+    for (float x : {-8.2f, 8.2f})
+        for (int i = 0; i < 3; ++i) {
+            box({x, .55f + i * 1.1f, -1.4f}, .75f, .55f, .55f, black);
+            for (float dy : {-.22f, .22f})
+                cylinder({x, .55f + i * 1.1f + dy, -.84f}, {x, .55f + i * 1.1f + dy, -.83f}, .2f, .2f, {.03f, .03f, .03f}, 10);
+        }
+    // Truss and lamps.
+    box({0, 5.3f, -1.2f}, 8.6f, .12f, .12f, metal);
+    box({0, 5.62f, -1.2f}, 8.6f, .06f, .06f, metal);
+    for (float x : {-8.6f, 8.6f})
+        box({x, 2.7f, -1.2f}, .14f, 2.7f, .14f, metal);
+    const float xs[5] = {-4.6f, -2.3f, 0, 2.3f, 4.6f};
     for (int i = 0; i < 5; ++i) {
-        // Beams swing in time: odd lamps against even ones.
-        float swing = (c.failed ? 0 : .32f * energy) * std::sin(float(c.beat) * Pi * .5f + (i % 2) * Pi);
-        P lamp = {xs[i], 40};
-        lamps[size_t(i)] = lamp;
-        P spot = add(lamp, scale(dir(swing + (i - 2) * .08f), 400));
-        P n = {-(spot.y - lamp.y), spot.x - lamp.x};
-        float nl = std::max(len(n), .001f);
-        n = scale(n, 1 / nl);
-        float strobe = c.power ? (frac(c.beat * 2) < .5f ? 1.f : .55f) : 1.f;
-        SDL_Color beam = alpha(l.key, (.10f + .14f * energy) * strobe * l.level);
-        quad(add(lamp, scale(n, 6)), sub(lamp, scale(n, 6)), sub(spot, scale(n, 70)), add(spot, scale(n, 70)), beam,
-             beam, alpha(beam, 0), alpha(beam, 0));
-        glow(spot.x, spot.y, 260, 70, alpha(l.key, .25f * l.level * strobe));
-        rect(lamp.x - 9, lamp.y - 10, 18, 14, rgb(30, 30, 36));
-        glow(lamp.x, lamp.y + 4, 46, 46, alpha(mix(l.key, rgb(255, 255, 255), .5f), .9f * l.level));
+        lampPos[size_t(i)] = {xs[i], 5.0f, -1.1f};
+        cylinder({xs[i], 5.2f, -1.2f}, {xs[i], 4.95f, -1.0f}, .16f, .18f, {.08f, .08f, .09f}, 8);
     }
 }
-void crowd(const Cues &c, const Light &l, float energy) {
-    // Two rows of silhouettes in the pit. Hands go up as the band earns them.
+
+void beams(const Show &s, const SDL_Color key, float level) {
+    for (int i = 0; i < 5; ++i) {
+        const V3 lamp = lampPos[size_t(i)];
+        const float swing = (s.failed ? 0 : .9f * s.energy) * std::sin(float(s.beat) * Pi * .5f + (i % 2) * Pi);
+        const V3 spot = {lamp.x + swing * 1.6f - (i - 2) * .3f, 0, -.6f + .6f * std::cos(float(s.beat) * Pi * .25f + i)};
+        const V3 a = cam.view(lamp), b = cam.view(spot);
+        if (a.z < .3f || b.z < .3f)
+            continue;
+        const SDL_FPoint pa = cam.screen(a), pb = cam.screen(b);
+        const float wa = 6, wb = cam.focal * 1.1f / b.z;
+        const float dx = pb.x - pa.x, dy = pb.y - pa.y, l = std::max(1.0f, std::hypot(dx, dy));
+        const float nx = -dy / l, ny = dx / l;
+        const float strobe = s.power ? (frac(s.beat * 2) < .5f ? 1.f : .5f) : 1.f;
+        const SDL_Color c = alpha(key, (.1f + .12f * s.energy) * strobe * level);
+        quad({pa.x + nx * wa, pa.y + ny * wa}, {pa.x - nx * wa, pa.y - ny * wa}, {pb.x - nx * wb, pb.y - ny * wb},
+             {pb.x + nx * wb, pb.y + ny * wb}, c, c, alpha(c, .15f), alpha(c, .15f));
+        glow(pb.x, pb.y, wb * 2.6f, wb * .8f, alpha(key, .3f * level * strobe));
+        glow(pa.x, pa.y, 40, 40, alpha(mix(key, rgb(255, 255, 255), .6f), .95f * level));
+    }
+}
+
+void sparks(const Show &s) {
+    const double age = s.time - mem.powerStart;
+    if (age < 0 || age > 1.8)
+        return;
+    for (float bx : {-2.4f, 2.6f}) {
+        const V3 base = cam.view({bx, 0, 1.1f});
+        if (base.z < .3f)
+            continue;
+        const SDL_FPoint p = cam.screen(base);
+        for (uint32_t i = 0; i < 40; ++i) {
+            const float t = float(age) - hash01(i * 3 + uint32_t(bx * 10 + 50)) * .5f;
+            if (t < 0)
+                continue;
+            const float vx = (hash01(i * 7) - .5f) * 160, vy = -420 - hash01(i * 11) * 280;
+            const float x = p.x + vx * t, y = p.y + vy * t + 560 * t * t, life = 1 - t / 1.3f;
+            if (life <= 0 || y > p.y + 4)
+                continue;
+            glow(x, y, 10 + 10 * life, 10 + 10 * life, rgb(255, 210, 120, int(230 * life)));
+        }
+    }
+}
+
+void crowd(const Show &s, SDL_Color key, float level) {
     for (int row = 0; row < 2; ++row) {
         const int count = row ? 15 : 19;
         const float baseY = row ? 708.f : 652.f, r = row ? 24.f : 17.f;
         for (int i = 0; i < count; ++i) {
             const uint32_t id = uint32_t(row * 100 + i);
-            float x = (i + .5f) * W / count + (hash01(id * 3) - .5f) * 40;
-            float bob = std::pow(1 - frac(c.beat + hash01(id * 5) * .2), 3.0f) * 7 * energy;
-            float y = baseY + (hash01(id * 7) - .5f) * 14 + bob;
-            const SDL_Color body = row ? rgb(14, 13, 18) : rgb(22, 20, 27);
-            bool hands = !c.failed && hash01(id * 11) < energy * 1.1f - .1f;
-            if (hands) {
-                float wave = std::sin(float(c.beat) * Pi + hash01(id * 13) * 6) * .25f;
+            const float x = (i + .5f) * W / count + (hash01(id * 3) - .5f) * 40;
+            const float bob = std::pow(1 - frac(s.beat + hash01(id * 5) * .2), 3.0f) * 7 * s.energy;
+            const float y = baseY + (hash01(id * 7) - .5f) * 14 + bob;
+            const SDL_Color body = row ? rgb(12, 11, 16) : rgb(20, 18, 25);
+            if (!s.failed && hash01(id * 11) < s.energy * 1.1f - .1f) {
+                const float wave = std::sin(float(s.beat) * Pi + hash01(id * 13) * 6) * .25f;
                 for (int side : {-1, 1}) {
                     if (side > 0 && hash01(id * 17) < .5f)
                         continue;
-                    P sh = {x + side * r * .8f, y + r * .6f};
-                    P hand = add(sh, scale(dir(Pi + side * (.35f + wave)), r * 3.2f));
-                    thickLine(sh.x, sh.y, hand.x, hand.y, r * .45f, body);
-                    disc(hand.x, hand.y, r * .3f, r * .3f, body, body, 8);
+                    const float a = Pi + side * (.35f + wave);
+                    const float hx = x + side * r * .8f + std::sin(a) * r * 3.2f, hy = y + r * .6f + std::cos(a) * r * 3.2f;
+                    thickLine(x + side * r * .8f, y + r * .6f, hx, hy, r * .45f, body);
+                    disc(hx, hy, r * .3f, r * .3f, body, body, 8);
                 }
             }
             disc(x, y + r * 1.6f, r * 1.7f, r * 1.1f, body, body, 18);
             disc(x, y, r * .8f, r, body, body, 16);
-            disc(x, y - r * .45f, r * .75f, r * .45f, alpha(l.key, .55f * l.level), alpha(l.key, 0), 12);
+            disc(x, y - r * .45f, r * .75f, r * .45f, alpha(key, .5f * level), alpha(key, 0), 12);
         }
     }
 }
-void sparks(const Cues &c) {
-    const double age = c.time - mem.powerStart;
-    if (age < 0 || age > 1.8)
-        return;
-    for (float baseX : {300.f, 980.f})
-        for (uint32_t i = 0; i < 36; ++i) {
-            float t = float(age) - hash01(i * 3 + uint32_t(baseX)) * .5f;
-            if (t < 0)
-                continue;
-            float vx = (hash01(i * 7) - .5f) * 140, vy = -380 - hash01(i * 11) * 260;
-            float x = baseX + vx * t, y = 440 + vy * t + 520 * t * t;
-            float life = 1 - t / 1.3f;
-            if (life <= 0 || y > 446)
-                continue;
-            glow(x, y, 10 + 8 * life, 10 + 8 * life, rgb(255, 210, 120, int(220 * life)));
-        }
-}
 
-// ------------------------------------------------------------ the band
-const Look nina{rgb(232, 196, 170), rgb(46, 92, 60), rgb(52, 104, 68), rgb(44, 44, 56), rgb(220, 220, 225),
-                rgb(238, 236, 214), 0};
-const Look caio{rgb(196, 146, 112), rgb(150, 34, 38), rgb(122, 28, 34), rgb(46, 62, 98), rgb(34, 34, 38),
-                rgb(26, 20, 18), 1};
-const Look bento{rgb(150, 104, 78), rgb(210, 200, 180), rgb(150, 104, 78), rgb(36, 36, 40), rgb(30, 30, 30),
-                 rgb(200, 120, 30), 2};
-
-void singer(const Cues &c, const Light &l, float energy) {
-    const P feet = {360, 420};
-    const float s = .92f, ph = frac(c.beat);
-    const float nod = (c.failed ? .35f : .06f + .22f * energy * std::pow(1 - ph, 3.0f));
-    const float crouch = c.failed ? 18 : 4 + 9 * energy * std::pow(1 - ph, 2.0f);
-    Body b = pose(feet, s, c.failed ? .12f : .03f, crouch, nod);
-    // Mic stand in front, a little to her left.
-    const P base = {feet.x + 22 * s, feet.y}, mic = {b.head.x + 16 * s, b.head.y + 16 * s};
-    legs(b, feet, 20, nina, l);
-    torso(b, nina, l);
-    head(b, nina, l, 0);
-    thickLine(base.x, base.y, base.x, mic.y + 30 * s, 3, rgb(60, 60, 66));
-    thickLine(base.x, mic.y + 30 * s, mic.x, mic.y, 3, rgb(60, 60, 66));
-    disc(base.x, base.y, 18 * s, 4 * s, rgb(40, 40, 44), rgb(20, 20, 24), 12);
-    disc(mic.x, mic.y, 5 * s, 5 * s, rgb(90, 90, 96), rgb(40, 40, 44), 10);
-    arm(b.shoulderR, add(mic, {2 * s, 6 * s}), 1, b, nina, l);
-    // Free arm: fist pumps on the beat once the show is going, both up in star power.
-    P hand;
-    if (c.failed)
-        hand = add(b.shoulderL, {-6 * s, 80 * s});
-    else if (c.power || energy > .55f) {
-        float pump = c.power ? 1 : (ph < .5f ? 1 - ph * 2 : 0);
-        hand = add(b.shoulderL, {-30 * s, (20 - 100 * pump) * s});
-    } else
-        hand = add(b.shoulderL, {-24 * s, 58 * s + 6 * std::sin(float(c.beat) * Pi) * s});
-    arm(b.shoulderL, hand, 1, b, nina, l);
-}
-
-void guitarist(const Cues &c, const Light &l, float energy) {
-    const float s = 1.0f, ph = frac(c.beat);
-    const float hit = ease(c.time - mem.lastHit, .14), miss = ease(c.time - mem.lastMiss, .5);
-    float jump = 0;
-    if (c.power) // hops every other beat
-        jump = std::sin(Pi * frac(c.beat / 2)) * 34 * (frac(c.beat / 2) < .5f ? 1.f : 0.f);
-    const P feet = {960, 404 - jump};
-    const float nod = c.failed ? .4f : (.05f + .32f * energy * std::pow(1 - ph, 3.0f)) - .3f * miss;
-    const float crouch = c.failed ? 20 : 6 + 12 * energy * std::pow(1 - ph, 2.0f) + (c.power ? 10 : 0);
-    const float lean = c.failed ? .15f : -.06f - .18f * miss;
-    Body b = pose(feet, s, lean, crouch, nod);
-    legs(b, {feet.x, 404}, c.power ? 30 : 24, caio, l);
-    torso(b, caio, l);
-    head(b, caio, l, (c.failed ? 0 : (1 - ph) * energy) - miss);
-    // The guitar: body at his right hip (screen left), neck up toward screen right.
-    const float neckAngle = c.failed ? -.05f : (c.power ? .85f : .5f + .06f * std::sin(float(c.beat) * Pi * .5f));
-    const P body = add(b.hip, {-12 * s, -18 * s});
-    const P neckDir = {std::cos(neckAngle), -std::sin(neckAngle)};
-    const P nut = add(body, scale(neckDir, 118 * s)), headEnd = add(body, scale(neckDir, 142 * s));
-    const SDL_Color finish = rgb(40, 170, 160), edge = rgb(18, 70, 66);
-    thickLine(body.x, body.y, nut.x, nut.y, 8 * s, rgb(70, 46, 28));
-    thickLine(nut.x, nut.y, headEnd.x, headEnd.y, 11 * s, rgb(24, 24, 28));
-    // An offset body: two lobes and a horn, not any real maker's shape.
-    disc(body.x - 6 * s, body.y + 8 * s, 30 * s, 24 * s, finish, edge, 22);
-    disc(body.x + 12 * s, body.y - 10 * s, 20 * s, 16 * s, finish, edge, 18);
-    thickLine(body.x + 14 * s, body.y - 18 * s, body.x + 30 * s, body.y - 30 * s, 9 * s, finish);
-    disc(body.x - 2 * s, body.y + 2 * s, 9 * s, 9 * s, rgb(240, 240, 236), rgb(200, 200, 196), 12); // pickguard
-    for (int i = 0; i < 3; ++i) // strings catching the light
-        thickLine(body.x - 14 * s, body.y + (6 - i * 3) * s, nut.x, nut.y + (2 - i * 2) * s * .5f, 1,
-                  alpha(rgb(255, 255, 255), .25f * l.level));
-    glow(body.x, body.y, 90 * s, 70 * s, alpha(finish, .25f * l.level));
-    // Fret hand follows the frets held; strum hand snaps down on each hit.
-    int lane = -1;
-    for (int i = 0; i < 5; ++i)
-        if (c.held & (1 << i)) {
-            lane = i;
-            break;
-        }
-    const float along = lane < 0 ? .66f : .9f - lane * .07f;
-    const P fret = add(add(body, scale(neckDir, 118 * s * along)), {0, 4 * s});
-    const P pick = add(body, {-4 * s, (-10 + 26 * hit) * s});
-    arm(b.shoulderR, fret, -1, b, caio, l);
-    arm(b.shoulderL, pick, 1, b, caio, l);
-    if (miss > 0) // a red flash on a fluffed note
-        glow(b.head.x, b.head.y, 120, 120, rgb(255, 40, 40, int(120 * miss)));
-}
-
-void drummer(const Cues &c, const Light &l, float energy) {
-    const float s = .55f, ph2 = frac(c.beat * 2);
-    const int beatNo = int(std::floor(c.beat));
-    const P seat = {640, 140};
-    // Kit first: cymbals behind him, drums in front.
-    const float crashAge = float(c.beat) - std::floor(float(c.beat) / 4) * 4;
-    const float wob = c.failed ? 0 : ease(crashAge, .9) * energy;
-    auto cymbal = [&](P at, float r, float tilt) {
-        thickLine(at.x, at.y, at.x, at.y + 60, 2, rgb(60, 60, 66));
-        disc(at.x, at.y, r * (1 + wob * .1f), r * (.28f + tilt), rgb(220, 180, 90), rgb(120, 90, 40), 18);
-    };
-    cymbal({580, 92}, 22, .02f);
-    cymbal({708, 80}, 26, wob * .2f);
-    Body b = pose({seat.x, seat.y + 118 * s}, s, 0, 0, .05f + .25f * energy * std::pow(1 - frac(c.beat), 3.0f));
-    torso(b, bento, l);
-    head(b, bento, l, 0);
-    disc(612, 112, 16, 6, rgb(200, 196, 190), rgb(120, 116, 110), 14); // snare
-    disc(628, 98, 14, 9, rgb(150, 30, 40), rgb(80, 16, 20), 14);       // toms
-    disc(656, 98, 14, 9, rgb(150, 30, 40), rgb(80, 16, 20), 14);
-    disc(640, 150, 42, 42, rgb(150, 30, 40), rgb(70, 14, 18), 26); // bass drum, under the highway's end
-    disc(640, 150, 33, 33, rgb(30, 30, 34), rgb(16, 16, 18), 24);
-    // Sticks: right hand rides the hats in eighths, left hits the snare on 2 and 4,
-    // and the crash gets the downbeat of each bar.
-    const float lift = c.failed ? .2f : std::sin(Pi * ph2) * (.4f + .6f * energy);
-    const bool backbeat = beatNo % 2 == 1 && ph2 < .5f;
-    const bool crash = beatNo % 4 == 0 && frac(c.beat) < .5f && energy > .45f;
-    P hatT = crash ? P{708, 82} : P{584, 96};
-    P snareT = {612, 108};
-    P handR = add(lerp(b.shoulderL, hatT, .9f), {0, -lift * 26});
-    P handL = add(lerp(b.shoulderR, snareT, .9f), {0, -(backbeat ? lift : lift * .3f) * 26});
-    for (auto [sh, hd, bend] : {std::tuple{b.shoulderL, handR, 1.f}, std::tuple{b.shoulderR, handL, -1.f}}) {
-        P elbow = joint(sh, hd, 44 * s, 44 * s, bend);
-        limb(sh, elbow, 15 * s, bento.sleeve, l);
-        limb(elbow, hd, 12 * s, bento.skin, l);
-        P d = sub(hd, elbow);
-        P tip = add(hd, scale(d, 30 * s / std::max(len(d), .001f)));
-        thickLine(hd.x, hd.y, tip.x, tip.y, 3, rgb(220, 200, 160));
+// Camera: cuts between shots every eight bars, a slow drift inside each, and
+// a push in while star power burns.
+void placeCamera(const Show &s) {
+    const double shotLen = 32; // beats
+    const int shot = s.failed ? 0 : int(hash01(uint32_t(std::floor(s.beat / shotLen)) * 7 + 3) * 4);
+    const float u = frac(s.beat / shotLen);
+    V3 from, to;
+    switch (shot) {
+    case 1: // low and heroic
+        from = {-1.0f + u * 1.2f, .8f, 5.3f}, to = {0, 1.95f, -1.2f};
+        break;
+    case 2: // high, over the crowd
+        from = {1.2f - u * 1.4f, 3.0f, 6.7f}, to = {0, 1.0f, -1.4f};
+        break;
+    case 3: // drifting from the guitarist's side
+        from = {1.3f - u * .6f, 1.5f, 5.5f}, to = {-.5f, 1.45f, -1.2f};
+        break;
+    default: // wide
+        from = {-.5f + u * 1.0f, 1.6f, 5.7f}, to = {0, 1.45f, -1.2f};
     }
+    const float push = s.power ? smooth(float(s.time - mem.powerStart) / 1.5f) : 0;
+    from = from + (to - from) * (.14f * push);
+    const float shake = ease(s.time - mem.powerStart, .5) * .06f;
+    from = from + V3{std::sin(float(s.time) * 61) * shake, std::sin(float(s.time) * 47) * shake, 0};
+    cam.look(from, to);
 }
 } // namespace
 
@@ -410,11 +720,10 @@ void draw(const Cues &input) {
             c.failed = true;
         else if (f == "hot")
             c.multiplier = 4, c.meter = .95;
-        if (f == "power" && mem.powerStart < -1e8)
-            mem.powerStart = c.time - .5, mem.power = true;
+        if (const char *b = std::getenv("SWITCH_HERO_STAGE_BEAT"))
+            c.beat += std::atof(b);
     }
 #endif
-    // Track what happened since the last frame; a restart rewinds the clock.
     if (c.time < mem.lastTime - .25 || c.hits < mem.hits || c.misses < mem.misses)
         reset();
     if (c.hits > mem.hits)
@@ -425,32 +734,63 @@ void draw(const Cues &input) {
         mem.powerStart = c.time;
     mem.hits = c.hits, mem.misses = c.misses, mem.power = c.power, mem.lastTime = c.time;
 
-    // How hard the show is going: the multiplier and rock meter build it, star power maxes it.
-    float energy = clamp01(.2f + .17f * float(c.multiplier - 1) + .45f * float(c.meter - .4));
+    Show s;
+    s.time = c.time, s.beat = c.beat, s.ph = frac(c.beat), s.power = c.power, s.failed = c.failed, s.held = c.held;
+    s.danger = !c.failed && c.meter < c.meterRed;
+    s.energy = clamp01(.2f + .17f * float(c.multiplier - 1) + .45f * float(c.meter - .4));
     if (c.power)
-        energy = 1;
+        s.energy = 1;
     if (c.failed)
-        energy = 0;
-    const bool danger = !c.failed && c.meter < c.meterRed;
-    Light l;
+        s.energy = 0;
+    s.hit = ease(c.time - mem.lastHit, .14), s.miss = ease(c.time - mem.lastMiss, .5);
+
+    SDL_Color key, fill;
+    float level = 1;
     if (c.power)
-        l = {rgb(110, 200, 255), rgb(40, 90, 160), 1};
-    else if (danger)
-        l = {rgb(255, 60, 50), rgb(110, 20, 20), .7f};
+        key = rgb(120, 205, 255), fill = rgb(60, 110, 220);
+    else if (s.danger)
+        key = rgb(255, 70, 55), fill = rgb(140, 30, 30), level = .75f;
     else if (c.failed)
-        l = {rgb(120, 120, 140), rgb(20, 20, 30), .35f};
+        key = rgb(110, 110, 130), fill = rgb(40, 40, 60), level = .35f;
     else {
-        // Warm amber and magenta take turns every four bars.
         const float t = .5f + .5f * std::sin(float(c.beat) * Pi / 16);
-        l = {mix(rgb(255, 170, 70), rgb(240, 70, 170), t), mix(rgb(120, 60, 30), rgb(100, 30, 90), t), 1};
+        key = mix(rgb(255, 176, 90), rgb(245, 80, 180), t), fill = mix(rgb(80, 120, 255), rgb(60, 200, 190), t);
     }
-    std::array<P, 5> lamps{};
-    backdrop(c, l, energy);
-    drummer(c, l, energy);
-    truss(c, l, energy, lamps);
-    singer(c, l, energy);
-    guitarist(c, l, energy);
-    sparks(c);
-    crowd(c, l, energy);
+    placeCamera(s);
+    const float pulse = .85f + .15f * std::pow(1 - s.ph, 2.0f) * s.energy;
+    lit.keyDir = norm({-.45f, .8f, .55f});
+    lit.fillDir = norm({.6f, .25f, .7f});
+    lit.key = col3(key) * (1.15f * level * pulse);
+    lit.fill = col3(fill) * (.45f * level);
+    lit.rim = col3(mix(key, rgb(255, 255, 255), .35f)) * (.55f * level);
+    lit.ambient = {.1f, .1f, .13f};
+
+    rect(0, 0, W, H, rgb(5, 5, 8));
+    stageSet(s, key);
+    flushTris();
+    // Light pools and shadows on the floor, under everyone.
+    for (V3 p : {V3{-2.35f, 0, .15f}, V3{2.3f, 0, -.1f}, V3{-3.9f, 0, -2.7f}}) {
+        const V3 v = cam.view(p);
+        if (v.z > .3f) {
+            const SDL_FPoint q = cam.screen(v);
+            glow(q.x, q.y, cam.focal * 3.2f / v.z, cam.focal * .9f / v.z, alpha(key, .35f * level));
+        }
+        shadow(p, .45f, .3f);
+    }
+    drummer(s);
+    bassist(s);
+    singer(s);
+    guitarist(s);
+    flushTris();
+    beams(s, key, level);
+    if (s.miss > 0) {
+        const V3 v = cam.view({2.3f, 1.7f, -.1f});
+        if (v.z > .3f) {
+            const SDL_FPoint q = cam.screen(v);
+            glow(q.x, q.y, 220, 220, rgb(255, 40, 40, int(110 * s.miss)));
+        }
+    }
+    sparks(s);
+    crowd(s, key, level);
 }
 } // namespace fret::stage
