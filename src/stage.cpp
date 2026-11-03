@@ -680,22 +680,30 @@ void crowd(const Show &s, SDL_Color key, float level) {
 // Camera: cuts between shots every eight bars, a slow drift inside each, and
 // a push in while star power burns.
 void placeCamera(const Show &s) {
+    // The high view over the crowd is the main shot; the others are variations
+    // of it, with the low hero angle kept rare so it still lands.
     const double shotLen = 32; // beats
-    const int shot = s.failed ? 0 : int(hash01(uint32_t(std::floor(s.beat / shotLen)) * 7 + 3) * 4);
+    const float pick = hash01(uint32_t(std::floor(s.beat / shotLen)) * 7 + 3);
+    int shot = pick < .3f ? 0 : pick < .55f ? 1 : pick < .8f ? 2 : pick < .92f ? 3 : 4;
+    if (s.failed || s.beat < shotLen)
+        shot = 0; // every song opens on the main shot
     const float u = frac(s.beat / shotLen);
     V3 from, to;
     switch (shot) {
-    case 1: // low and heroic
+    case 1: // high, drifting from the left
+        from = {-1.8f + u * 1.2f, 3.1f, 6.5f}, to = {.2f, 1.0f, -1.4f};
+        break;
+    case 2: // high, drifting from the right
+        from = {1.8f - u * 1.2f, 3.1f, 6.5f}, to = {-.2f, 1.0f, -1.4f};
+        break;
+    case 3: // steeper, looking down on the band
+        from = {.4f - u * .8f, 3.7f, 6.2f}, to = {0, .9f, -1.4f};
+        break;
+    case 4: // low and heroic, now and then
         from = {-1.0f + u * 1.2f, .8f, 5.3f}, to = {0, 1.95f, -1.2f};
         break;
-    case 2: // high, over the crowd
+    default: // high, over the crowd: the main shot
         from = {1.2f - u * 1.4f, 3.0f, 6.7f}, to = {0, 1.0f, -1.4f};
-        break;
-    case 3: // drifting from the guitarist's side
-        from = {1.3f - u * .6f, 1.5f, 5.5f}, to = {-.5f, 1.45f, -1.2f};
-        break;
-    default: // wide
-        from = {-.5f + u * 1.0f, 1.6f, 5.7f}, to = {0, 1.45f, -1.2f};
     }
     const float push = s.power ? smooth(float(s.time - mem.powerStart) / 1.5f) : 0;
     from = from + (to - from) * (.14f * push);
