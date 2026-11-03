@@ -367,6 +367,8 @@ const std::tuple<const char *, const char *, const char *> translationTable[] = 
     {"{}% hit", "{}% de acertos", "{}% de aciertos"},
     {"FINAL STANDINGS", "CLASSIFICAÇÃO FINAL", "CLASIFICACIÓN FINAL"},
     {"A plays again   B returns to the song list", "A joga de novo   B volta para a lista", "A juega de nuevo   B vuelve a la lista de canciones"},
+    {"Stage", "Palco", "Escenario"},
+    {"The band, lights and crowd behind the highway. Off shows the plain wall.", "A banda, as luzes e o público atrás da pista. Desligado mostra só a parede.", "La banda, las luces y el público detrás de la pista. Apagado muestra solo la pared."},
     {"Film grain", "Granulado", "Grano de película"},
     {"The moving speckle over the picture. Turn it off first if frames drop.", "O granulado que se move sobre a imagem. Desligue primeiro se a imagem travar.", "El granulado que se mueve sobre la imagen. Desactívalo primero si bajan los fotogramas."},
 

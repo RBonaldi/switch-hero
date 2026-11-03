@@ -1,5 +1,6 @@
 #include "audio.hpp"
 #include "background.hpp"
+#include "stage.hpp"
 #include "calibration.hpp"
 #include "clock.hpp"
 #include "downloader.hpp"
@@ -96,6 +97,7 @@ struct Settings {
     // to lose. Split-screen multiplies everything else on screen, so this is
     // the first switch to reach for when frames drop.
     bool filmGrain = true;
+    bool stage = true; // the band, lights and crowd behind the highway
     int sortMode = 0;           // song list order: 0 title, 1 artist, 2 best stars
     int hitWindow = 1;          // 0 strict, 1 normal, 2 lenient
     // Volumes run 0 to 10.
@@ -147,6 +149,8 @@ struct Settings {
                 rumble = v != 0;
             if (k == "film_grain")
                 filmGrain = v != 0;
+            else if (k == "stage")
+                stage = v != 0;
             if (k == "sort_mode")
                 sortMode = whole(v, 0, 2);
             if (k == "hit_window")
@@ -188,7 +192,7 @@ struct Settings {
         f << "audio_ms " << audioMs << "\nvideo_ms " << videoMs << "\ntravel " << travel << "\ngamepad "
           << gamepad << "\nwii_guitar " << wiiGuitar << "\nno_fail " << noFail << "\npart " << part
           << "\ndifficulty " << difficulty << "\nlefty " << lefty << "\ntiming_overlay " << timingOverlay
-          << "\nfilm_grain " << filmGrain
+          << "\nfilm_grain " << filmGrain << "\nstage " << stage
           << "\nsort_mode " << sortMode << "\nhit_window " << hitWindow << "\nmusic_volume " << musicVolume
           << "\nsfx_volume " << sfxVolume << "\nhighway " << highway << "\npalette " << palette << "\nrumble " << rumble
           << "\nhit_ratings " << hitRatings << '\n';
@@ -1196,7 +1200,7 @@ void menu(float cx, float y, float spacing, const std::vector<std::string> &item
 
 // The options screens: a short list of categories, each opening its own page,
 // so every setting sits under a name that says what it is for.
-enum class Opt { Mode, NoFail, HitWindow, Speed, Lefty, TimingOverlay, FilmGrain, Music, Effects, CalibrateAudio, AudioOffset, CalibrateVideo, VideoOffset, Fret, Test, Reset, Language, Highway, Palette, Rumble, HitRatings };
+enum class Opt { Mode, NoFail, HitWindow, Speed, Lefty, TimingOverlay, FilmGrain, Music, Effects, CalibrateAudio, AudioOffset, CalibrateVideo, VideoOffset, Fret, Test, Reset, Language, Highway, Palette, Rumble, HitRatings, Stage };
 struct OptionRow {
     Opt id;
     int fret = 0;
@@ -1270,6 +1274,8 @@ std::vector<OptionRow> optionRows(int page, const Settings &s, bool confirmReset
                         tr("The moving speckle over the picture. Turn it off first if frames drop."), true});
     } else if (page == CustomizePage) {
         auto of = [](int i, size_t n) { return std::to_string(i + 1) + " / " + std::to_string(n); };
+        rows.push_back({Opt::Stage, 0, tr("Stage"), tr(s.stage ? "ON" : "OFF"),
+                        tr("The band, lights and crowd behind the highway. Off shows the plain wall."), true});
         rows.push_back({Opt::Highway, 0, tr("Highway"), tr(highwayThemes[size_t(s.highway)].name),
                         tr("The board the notes run down. Frets, rails and the far end change with it."), true, "",
                         of(s.highway, highwayThemes.size())});
@@ -2896,6 +2902,13 @@ int main(int argc, char **argv) {
                     case Opt::TimingOverlay:
                         if (delta || accept) {
                             settings.timingOverlay = !settings.timingOverlay;
+                            if (accept)
+                                audio.playSfx(Sfx::Toggle, .8f);
+                        }
+                        break;
+                    case Opt::Stage:
+                        if (delta || accept) {
+                            settings.stage = !settings.stage;
                             if (accept)
                                 audio.playSfx(Sfx::Toggle, .8f);
                         }
@@ -4530,7 +4543,18 @@ int main(int argc, char **argv) {
                     text(60, H - 28, message, marker(22, messageInk(), -1));
             } else if (session && song) {
                 double time = screen == Screen::Playing ? songTime() : frozen;
-                wall(ui, session->powerActive ? ink::power : ink::crt);
+                if (settings.stage) {
+                    stage::Cues cues;
+                    cues.time = time;
+                    cues.beat = song->tickAt(time) / song->resolution;
+                    cues.combo = session->combo, cues.multiplier = session->multiplier();
+                    cues.hits = session->hits, cues.misses = session->misses;
+                    cues.power = session->powerActive, cues.failed = session->failed;
+                    cues.meter = session->meter, cues.meterRed = Session::meterRed;
+                    cues.held = frets;
+                    stage::draw(cues);
+                } else
+                    wall(ui, session->powerActive ? ink::power : ink::crt);
                 highway(*song, *session, settings, time - settings.videoMs / 1000, frets, ui);
                 // Call the timing. A hit that the game cannot tell you was tight is a
                 // hit that feels the same as one scraped in at the edge of the window,
