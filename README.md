@@ -7,25 +7,23 @@ Controller or a Wii guitar, and seats up to four players in split screen. It
 speaks English and Brazilian Portuguese. It is an independent implementation, not a port of
 Clone Hero's proprietary source.
 
-![Gameplay](docs/gameplay.jpg)
+![The stage behind the highway](docs/stage.jpg)
 
-| Title menu | Song list |
+| Star power at the stadium | The garage |
 |---|---|
-| ![Title menu](docs/title.jpg) | ![Song list](docs/song-list.jpg) |
-| **Difficulty select** | **Results** |
-| ![Difficulty select](docs/difficulty.jpg) | ![Results](docs/results.jpg) |
-| **Customize** | **Practice** |
-| ![Customize](docs/customize.jpg) | ![Practice](docs/practice.jpg) |
-| **Multiplayer lobby** | **Four players** |
-| ![Multiplayer lobby](docs/lobby.jpg) | ![Four players](docs/multiplayer.jpg) |
+| ![Star power](docs/stage-power.jpg) | ![The garage](docs/venue-garage.jpg) |
+| **New career** | **The road** |
+| ![New career](docs/career-new.jpg) | ![Career](docs/career.jpg) |
+| **The shop** | **A rival duel** |
+| ![Shop](docs/shop.jpg) | ![Duel](docs/duel.jpg) |
+| **Duel won** | |
+| ![Duel won](docs/duel-won.jpg) | |
 
 ## Stage, career and rival duels (this fork)
 
 This fork adds a live 3D stage behind the highway, a career mode and rival
 duels. Every character, venue and rival is original to this game; none of them
 is, or is meant to suggest, a real musician or another game's cast.
-
-![The stage behind the highway](docs/stage.jpg)
 
 **The stage.** A low-poly 3D scene generated every frame: an original band
 (Nina on vocals, Caio on guitar, Luna on bass and Bento on drums), truss lights,
@@ -36,10 +34,6 @@ the guitar and sends sparks up. The room goes red when the crowd turns on you.
 The camera cuts between shots every eight bars, mostly from above the crowd.
 Customize > Stage turns it off for the plain wall.
 
-| Star power at the stadium | The garage |
-|---|---|
-| ![Star power](docs/stage-power.jpg) | ![The garage](docs/venue-garage.jpg) |
-
 **Career.** From a garage to a stadium in eight venues, with setlists built from
 your own library, easiest charts first: four songs and an encore each. Clear three
 songs to unlock the encore; play the encore to unlock the next venue. Each venue
@@ -48,12 +42,6 @@ and the crowd grows with it. New stars earn cash for a shop of guitar finishes,
 jackets and fire columns, previewed live on stage. Career stars come from the
 same records as Quickplay, so nothing you have already played is lost.
 
-| New career | The road |
-|---|---|
-| ![New career](docs/career-new.jpg) | ![Career](docs/career.jpg) |
-| **The shop** | |
-| ![Shop](docs/shop.jpg) | |
-
 **Rival duels.** After the encore of the club, the festival and the stadium, a
 rival waits: Dona Rubi (a blues queen with a resonator), Viktor Kade (a shredder
 with a double-neck) and MK-77 (a robot). It is one on one: the band clears the
@@ -61,10 +49,6 @@ stage. Star phrases arm attacks instead of star power, and both sides throw them
 lefty flip, overdrive, blackout and a broken string you mash to mend. Run the
 rival's meter dry, or finish the song ahead, to win a prize and the next venue.
 The winner celebrates on stage; the loser hangs their head.
-
-| A duel | Won |
-|---|---|
-| ![Duel](docs/duel.jpg) | ![Duel won](docs/duel-won.jpg) |
 
 **Status of these additions:** built and played on the desktop build, with
 automated tests for the career and duel rules (`tests/career_tests.cpp`,
