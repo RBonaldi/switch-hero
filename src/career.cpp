@@ -1,5 +1,6 @@
 #include "career.hpp"
 #include <algorithm>
+#include <cmath>
 #include <fstream>
 #include <sstream>
 
