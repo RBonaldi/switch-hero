@@ -16,3 +16,5 @@ release/switch-hero/songs/*
 release/*.zip
 # Unzipped copies of past releases; the zips are on GitHub Releases.
 release/switch-hero */
+career.cfg
+library.cache

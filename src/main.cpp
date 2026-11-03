@@ -1,6 +1,7 @@
 #include "audio.hpp"
 #include "background.hpp"
 #include "stage.hpp"
+#include "career.hpp"
 #include "calibration.hpp"
 #include "clock.hpp"
 #include "downloader.hpp"
@@ -1330,10 +1331,10 @@ int main(int argc, char **argv) {
         if (R_FAILED(romfsInit()))
             std::cerr << "Switch Hero: RomFS unavailable; falling back to sdmc fonts\n";
         const std::string home = "sdmc:/switch/switch-hero";
-        fs::path root = home + "/songs", config = home + "/settings.cfg", scoresPath = home + "/scores.cfg",
+        fs::path root = home + "/songs", config = home + "/settings.cfg", scoresPath = home + "/scores.cfg", careerPath = home + "/career.cfg",
                  libraryPath = home + "/library.cache";
 #else
-        fs::path root = "songs", config = "settings.cfg", scoresPath = "scores.cfg", libraryPath = "library.cache";
+        fs::path root = "songs", config = "settings.cfg", scoresPath = "scores.cfg", careerPath = "career.cfg", libraryPath = "library.cache";
 #endif
         bool inspect = false, smoke = false, smokeGuitar = false, timing = false, checkGemsOnly = false;
         std::string bakeGemsTo;
@@ -1515,6 +1516,38 @@ int main(int argc, char **argv) {
         }
         Scores scores;
         scores.load(scoresPath);
+        // Career mode: progress, cash and the shop. See career.hpp.
+        career::Career career;
+        career.load(careerPath);
+        bool careerRun = false;     // the song playing was started from the career
+        size_t careerTier = 0, careerSong = 0, shopRow = 0;
+        int careerSetup = -1;       // >= 0 while a new career picks its difficulty
+        unsigned careerSeed = unsigned(SDL_GetTicks());
+        std::string careerBand, careerNews, careerCash;
+        double careerNewsAt = -1e9;
+        bool careerHadEncore = false, careerHadNext = false;
+        // What the band wears on stage: the equipped shop items, or one being previewed.
+        auto dress = [&](stage::Cues &c, const career::Item *preview) {
+            auto colour = [&](const std::string &id, unsigned fallback) {
+                const career::Item *i = career::findItem(id);
+                return i ? i->color : fallback;
+            };
+            c.guitarColor = colour(career.guitar, 0x1f9e99), c.jacketColor = colour(career.jacket, 0x1a1a1c);
+            c.pyro = career.pyro && career.owns("stage-pyro");
+            if (preview && preview->kind == career::Item::Guitar)
+                c.guitarColor = preview->color;
+            else if (preview && preview->kind == career::Item::Jacket)
+                c.jacketColor = preview->color;
+            else if (preview)
+                c.pyro = true, c.power = true;
+        };
+        auto saveCareer = [&]() {
+            try {
+                career.save(careerPath);
+            } catch (const std::exception &e) {
+                SDL_Log("Switch Hero: %s", e.what());
+            }
+        };
         // How the last finished run compared with the stored best.
         bool newBest = false;
         int previousBest = -1;
@@ -1555,7 +1588,7 @@ int main(int argc, char **argv) {
             settings.wiiGuitar = true;
         Audio audio;
         audio.start(); // interface sounds work from the song list onward
-        enum class Screen { Language, Main, Library, Select, Playing, Paused, Countdown, Results, Settings, Calibrate, Download, Sections, Lobby };
+        enum class Screen { Language, Main, Library, Select, Playing, Paused, Countdown, Results, Settings, Calibrate, Download, Sections, Lobby, Career, Shop };
         // The first start asks for a language before anything else.
         Screen screen = settings.language < 0 ? Screen::Language : Screen::Main;
         int languageRow = int(lang::current());
@@ -2334,8 +2367,8 @@ int main(int argc, char **argv) {
                     screen = Screen::Main;
                 }
             } else if (screen == Screen::Main) {
-                // Quickplay, practice, multiplayer, download, options, quit.
-                constexpr int quitRow = 5;
+                // Career, quickplay, practice, multiplayer, download, options, quit.
+                constexpr int quitRow = 6;
                 if (up || down) {
                     mainRow = (mainRow + quitRow + 1 + (down ? 1 : -1)) % (quitRow + 1);
                     audio.playSfx(Sfx::Move);
@@ -2345,14 +2378,31 @@ int main(int argc, char **argv) {
                     mainRow = quitRow;
                     audio.playSfx(Sfx::Move);
                 } else if (accept || (back && mainRow == quitRow)) {
-                    if (mainRow <= 1) {
+                    careerRun = false;
+                    if (mainRow == 0) {
+                        audio.playSfx(Sfx::Select, .7f);
+                        message.clear();
+                        practiceMode = false, multiplayer = false;
+                        if (!career.active) {
+                            careerSetup = 1, careerBand = career::bandName(careerSeed);
+                        } else {
+                            careerSetup = -1;
+                            // Open on the furthest venue reached.
+                            careerTier = 0;
+                            for (size_t t = 0; t < career.tiers.size(); ++t)
+                                if (career.tierOpen(scores, t))
+                                    careerTier = t;
+                            careerSong = 0;
+                        }
+                        screen = Screen::Career;
+                    } else if (mainRow <= 2) {
                         // Practice picks a song the same way, then its sections.
-                        practiceMode = mainRow == 1;
+                        practiceMode = mainRow == 2;
                         multiplayer = false;
                         audio.playSfx(Sfx::Select, .7f);
                         message.clear();
                         screen = Screen::Library;
-                    } else if (mainRow == 2) {
+                    } else if (mainRow == 3) {
                         // Multiplayer is docked-only: four boards on the handheld
                         // screen are unreadable, and players two to four have no
                         // way to hold a Joy-Con that is attached to the console.
@@ -2366,12 +2416,152 @@ int main(int argc, char **argv) {
                             multiplayer = true;
                             screen = Screen::Library;
                         }
-                    } else if (mainRow == 3)
+                    } else if (mainRow == 4)
                         openDownloads();
-                    else if (mainRow == 4)
+                    else if (mainRow == 5)
                         openOptions();
                     else
                         running = false;
+                }
+            } else if (screen == Screen::Career && careerSetup >= 0) {
+                // A new career: name the band, pick the difficulty, build the setlists.
+                if (up || down) {
+                    careerSetup = std::clamp(careerSetup + (down ? 1 : -1), 0, 3);
+                    audio.playSfx(Sfx::Move);
+                }
+                if (secondary) {
+                    careerBand = career::bandName(++careerSeed);
+                    audio.playSfx(Sfx::Toggle);
+                }
+#ifdef __SWITCH__
+                if (press(3)) {
+                    std::string typed = careerBand;
+                    if (askText(tr("Band name"), typed) && !typed.empty())
+                        careerBand = typed.substr(0, 40);
+                }
+#endif
+                if (back) {
+                    audio.playSfx(Sfx::Back);
+                    careerSetup = -1;
+                    screen = Screen::Main;
+                } else if (accept) {
+                    std::vector<std::pair<fs::path, std::pair<std::string, std::string>>> pool;
+                    for (const auto &e : entries)
+                        if (e.error.empty())
+                            pool.push_back({e.folder, {e.name, e.artist}});
+                    auto tiers = career::buildSetlists(pool);
+                    if (tiers.empty()) {
+                        audio.playSfx(Sfx::Back);
+                        message = tr("Add some songs first: the career builds its setlists from your library");
+                    } else {
+                        const auto keep = career; // a restart keeps cash and the shop
+                        career = career::Career{};
+                        career.active = true, career.band = careerBand, career.difficulty = careerSetup;
+                        career.tiers = std::move(tiers);
+                        if (keep.active)
+                            career.cash = keep.cash, career.owned = keep.owned, career.guitar = keep.guitar,
+                            career.jacket = keep.jacket, career.pyro = keep.pyro;
+                        saveCareer();
+                        careerSetup = -1, careerTier = 0, careerSong = 0;
+                        careerNews = tr("{} is born. First stop: {}", career.band,
+                                        tr(career::venues()[size_t(career.tiers[0].venue)].name));
+                        careerCash.clear(), careerNewsAt = now();
+                        audio.playSfx(Sfx::Win, .6f);
+                    }
+                }
+            } else if (screen == Screen::Career) {
+                const size_t tiers = career.tiers.size();
+                careerTier = std::min(careerTier, tiers ? tiers - 1 : 0);
+                const size_t songsHere = tiers ? career.tiers[careerTier].songs.size() : 0;
+                if ((left || right) && tiers) {
+                    const size_t next = left ? (careerTier ? careerTier - 1 : 0) : std::min(tiers - 1, careerTier + 1);
+                    if (next != careerTier) {
+                        careerTier = next, careerSong = 0;
+                        audio.playSfx(Sfx::Move);
+                    }
+                }
+                if ((up || down) && songsHere) {
+                    careerSong = (careerSong + songsHere + (down ? 1 : size_t(-1))) % songsHere;
+                    audio.playSfx(Sfx::Move);
+                }
+                if (secondary) {
+                    audio.playSfx(Sfx::Select, .7f);
+                    shopRow = 0;
+                    screen = Screen::Shop;
+                } else if (press(3) || key(SDL_SCANCODE_R)) {
+                    // A new career: same cash and shop, new band and setlists.
+                    audio.playSfx(Sfx::Select, .7f);
+                    careerSetup = career.difficulty, careerBand = career.band;
+                } else if (back) {
+                    audio.playSfx(Sfx::Back);
+                    screen = Screen::Main;
+                } else if (accept && songsHere) {
+                    const auto &tier = career.tiers[careerTier];
+                    const bool encore = careerSong + 1 == songsHere && songsHere > 1;
+                    if (!career.tierOpen(scores, careerTier)) {
+                        audio.playSfx(Sfx::Back);
+                        message = tr("Locked: play the encore of the venue before this one");
+                    } else if (encore && !career.encoreOpen(scores, careerTier)) {
+                        audio.playSfx(Sfx::Back);
+                        message = tr("The crowd wants more first: clear three songs to unlock the encore");
+                    } else {
+                        const auto &gig = tier.songs[careerSong];
+                        try {
+                            auto loaded = std::make_unique<Song>(loadSong(root / gig.folder));
+                            const int d = nearestDifficulty(*loaded, "Guitar", career.difficulty);
+                            const int t = findTrack(*loaded, "Guitar", d);
+                            if (t < 0)
+                                throw std::runtime_error(tr("This song has no guitar part"));
+                            song = std::move(loaded);
+                            trackIndex = size_t(t);
+                            longestSustain = 0;
+                            for (const auto &track : song->tracks)
+                                for (const auto &note : track.notes)
+                                    for (double end : note.end)
+                                        longestSustain = std::max(longestSustain, end - note.time);
+                            careerHadEncore = career.encoreOpen(scores, careerTier);
+                            careerHadNext = career.tierOpen(scores, careerTier + 1);
+                            practiceMode = false, multiplayer = false, careerRun = true;
+                            message.clear();
+                            audio.playSfx(Sfx::Select);
+                            start();
+                        } catch (const std::exception &e) {
+                            audio.playSfx(Sfx::Back);
+                            message = e.what();
+                        }
+                    }
+                }
+            } else if (screen == Screen::Shop) {
+                const auto &items = career::shop();
+                if (up || down) {
+                    shopRow = (shopRow + items.size() + (down ? 1 : size_t(-1))) % items.size();
+                    audio.playSfx(Sfx::Move);
+                }
+                if (back) {
+                    audio.playSfx(Sfx::Back);
+                    screen = Screen::Career;
+                } else if (accept) {
+                    const auto &item = items[shopRow];
+                    if (!career.owns(item.id)) {
+                        if (career.cash >= item.price) {
+                            career.cash -= item.price;
+                            career.owned.insert(item.id);
+                            audio.playSfx(Sfx::Win, .5f);
+                        } else {
+                            audio.playSfx(Sfx::Back);
+                            message = tr("Not enough cash yet: play more gigs");
+                        }
+                    }
+                    if (career.owns(item.id)) {
+                        if (item.kind == career::Item::Guitar)
+                            career.guitar = item.id;
+                        else if (item.kind == career::Item::Jacket)
+                            career.jacket = item.id;
+                        else
+                            career.pyro = !career.pyro;
+                        audio.playSfx(Sfx::Toggle);
+                    }
+                    saveCareer();
                 }
             } else if (screen == Screen::Sections) {
                 // Choose where the loop starts, then where it ends.
@@ -3215,6 +3405,30 @@ int main(int argc, char **argv) {
                         newBest = scores.submit(folder, session->track->instrument, session->track->difficulty,
                                                 {int(session->score), starsFor(accuracy, false), int(accuracy * 100),
                                                  session->misses == 0});
+                        if (careerRun && careerTier < career.tiers.size()) {
+                            // A chart without the career's difficulty was played at the nearest
+                            // one; it still counts for the career.
+                            if (session->track->difficulty != career.difficulty)
+                                scores.submit(folder, "Guitar", career.difficulty,
+                                              {int(session->score), starsFor(accuracy, false), int(accuracy * 100),
+                                               session->misses == 0});
+                            const auto &tier = career.tiers[careerTier];
+                            const int earned = career.award(tier.songs[std::min(careerSong, tier.songs.size() - 1)],
+                                                            careerTier, starsFor(accuracy, false));
+                            careerCash = earned ? tr("+${} cash", grouped(earned)) : std::string();
+                            if (!careerHadNext && career.tierOpen(scores, careerTier + 1)) {
+                                const auto &v = career::venues()[size_t(career.tiers[careerTier + 1].venue)];
+                                careerNews = tr("NEW VENUE: {}", tr(v.name));
+                            } else if (!careerHadEncore && career.encoreOpen(scores, careerTier))
+                                careerNews = tr("ENCORE! The crowd wants one more");
+                            else if (careerTier + 1 == career.tiers.size() &&
+                                     career.cleared(scores, tier.songs.back()))
+                                careerNews = tr("{} conquered the world", career.band);
+                            else
+                                careerNews = tr("Gig done at {}", tr(career::venues()[size_t(tier.venue)].name));
+                            careerNewsAt = now();
+                            saveCareer();
+                        }
                         try {
                             scores.save(scoresPath);
                         } catch (const std::exception &e) {
@@ -3257,7 +3471,7 @@ int main(int argc, char **argv) {
                 } else if (accept && pauseRow == 3) {
                     audio.stop();
                     audio.playSfx(Sfx::Back);
-                    screen = Screen::Library;
+                    screen = careerRun ? Screen::Career : Screen::Library;
                     message.clear();
                 }
             } else if (screen == Screen::Countdown) {
@@ -3319,10 +3533,14 @@ int main(int argc, char **argv) {
                 if (back || (accept && resultRow == 0)) {
                     audio.stop();
                     audio.playSfx(Sfx::Back);
-                    screen = Screen::Library;
+                    screen = careerRun ? Screen::Career : Screen::Library;
                 } else if (accept && resultRow == 1) {
                     audio.playSfx(Sfx::Select);
                     start();
+                } else if (accept && resultRow == 2 && careerRun) {
+                    audio.stop();
+                    audio.playSfx(Sfx::Back);
+                    screen = Screen::Career;
                 } else if (accept && resultRow == 2) {
                     audio.stop();
                     audio.playSfx(Sfx::Select, .7f);
@@ -3543,15 +3761,17 @@ int main(int argc, char **argv) {
                     text(930, 592, tr(entries.size() == 1 ? "{} SONG" : "{} SONGS", entries.size()), s);
                 }
                 menu(330, 316, 52,
-                     {tr("QUICKPLAY"), tr("PRACTICE"), tr("MULTIPLAYER"), tr("DOWNLOAD SONGS"), tr("OPTIONS"), tr("QUIT")},
+                     {tr("CAREER"), tr("QUICKPLAY"), tr("PRACTICE"), tr("MULTIPLAYER"), tr("DOWNLOAD SONGS"), tr("OPTIONS"),
+                      tr("QUIT")},
                      mainRow, ui, 400, 28);
-                static const char *const blurbs[] = {"pick a song from your library", "loop a section until you nail it",
+                static const char *const blurbs[] = {"from the garage to the stadium",
+                                                     "pick a song from your library", "loop a section until you nail it",
                                                      "two to four players, split screen", "grab charts from chorus encore",
                                                      "controls, calibration and gameplay", "back to the homebrew menu"};
                 auto blurb = body(18, ink::dim);
                 blurb.align = Align::Center;
                 // Say why the multiplayer entry will refuse before it is picked, not after.
-                text(330, 620, tr(mainRow == 2 && !platform::docked() ? "dock the console to play multiplayer" : blurbs[mainRow]),
+                text(330, 620, tr(mainRow == 3 && !platform::docked() ? "dock the console to play multiplayer" : blurbs[mainRow]),
                      blurb);
                 if (!message.empty())
                     text(60, 644, message, marker(22, messageInk(), -1));
@@ -3705,6 +3925,200 @@ int main(int argc, char **argv) {
                 mode.align = Align::Right;
                 text(1222, 680, tr(settings.wiiGuitar ? "wii guitar mode" : settings.gamepad ? "press-to-hit mode" : "strum mode"),
                      mode);
+            } else if (screen == Screen::Career || screen == Screen::Shop) {
+                // The venue itself plays behind the menus.
+                const size_t tiers = career.tiers.size();
+                const size_t tierAt = tiers ? std::min(careerTier, tiers - 1) : 0;
+                const auto &venueList = career::venues();
+                stage::Cues cues;
+                cues.time = ui, cues.beat = ui * 2.1, cues.multiplier = 3, cues.meter = .72;
+                cues.venue = careerSetup >= 0 || !tiers ? 3 : career.tiers[tierAt].venue;
+                const auto &items = career::shop();
+                dress(cues, screen == Screen::Shop ? &items[std::min(shopRow, items.size() - 1)] : nullptr);
+                stage::draw(cues);
+                rect(0, 0, W, H, {0, 0, 0, 110});
+                auto gold = SDL_Color{255, 196, 40, 255}, lockInk = SDL_Color{110, 110, 120, 255};
+                auto wrap = [&](float x, float y, float width, const std::string &textIn, float size, SDL_Color ink) {
+                    std::istringstream words(textIn);
+                    std::string line, w;
+                    float yy = y;
+                    while (words >> w) {
+                        const std::string tryLine = line.empty() ? w : line + " " + w;
+                        if (!line.empty() && measure(tryLine, Face::Body, size) > width) {
+                            text(x, yy, line, body(size, ink));
+                            yy += size * 1.3f, line = w;
+                        } else
+                            line = tryLine;
+                    }
+                    if (!line.empty())
+                        text(x, yy, line, body(size, ink));
+                };
+                auto cashLine = [&]() {
+                    auto c = stencil(40, {200, 255, 120, 255}, {60, 160, 40, 255});
+                    c.align = Align::Right, c.glow = alpha(ink::acid, .35f);
+                    text(1220, 26, "$ " + grouped(career.cash), c);
+                };
+                static const char *const diffNames[4] = {"EASY", "MEDIUM", "HARD", "EXPERT"};
+                if (careerSetup >= 0) {
+                    auto head = stencil(64, ink::chrome, {116, 122, 138, 255});
+                    head.glow = alpha(ink::crt, .5f);
+                    text(60, 28, tr("NEW CAREER"), head);
+                    text(64, 118, tr("your band"), marker(26, {198, 200, 212, 255}, -2));
+                    auto name = stencil(52, {255, 196, 60, 255}, {206, 26, 20, 255});
+                    name.glow = alpha(ink::blood, .8f), name.maxWidth = 1100;
+                    text(64, 150, careerBand, name);
+                    menu(330, 330, 66, {tr("EASY"), tr("MEDIUM"), tr("HARD"), tr("EXPERT")}, careerSetup, ui, 420, 32);
+                    static const char *const why[4] = {"a gentle start, forgiving crowds", "a real warm-up",
+                                                       "the real deal", "every note, no mercy"};
+                    auto b = body(18, ink::dim);
+                    b.align = Align::Center;
+                    text(330, 600, tr(why[careerSetup]), b);
+                    plate(700, 300, 520, 250);
+                    text(730, 322, tr("HOW IT WORKS"), stencil(28));
+                    wrap(730, 368, 460,
+                         tr("Eight venues, from a garage to a stadium. Clear three songs to unlock the encore, play the "
+                            "encore to unlock the next venue. New stars earn cash for the shop."),
+                         18, ink::white);
+                    if (career.active)
+                        text(730, 500, tr("Starting over keeps your cash and the shop"), body(16, ink::acid));
+                    std::vector<std::pair<std::string, std::string>> h = {{glyphAccept, tr("START")},
+                                                                          {glyphAlt, tr("ANOTHER NAME")}};
+#ifdef __SWITCH__
+                    h.push_back({"X", tr("TYPE A NAME")});
+#endif
+                    h.push_back({glyphBack, tr("BACK")});
+                    hints(h);
+                } else if (screen == Screen::Career) {
+                    auto bandStyle = stencil(46, {255, 196, 60, 255}, {206, 26, 20, 255});
+                    bandStyle.glow = alpha(ink::blood, .8f), bandStyle.maxWidth = 760;
+                    text(56, 24, career.band, bandStyle);
+                    text(60, 86, std::string(tr("CAREER")) + "  /  " + tr(diffNames[career.difficulty]), marker(24, {198, 200, 212, 255}, -1));
+                    cashLine();
+                    {
+                        int maxStars = 0;
+                        for (const auto &t : career.tiers)
+                            maxStars += 5 * int(t.songs.size());
+                        auto st = body(22, ink::white);
+                        st.align = Align::Right;
+                        const std::string line = tr("{} / {} stars", career.totalStars(scores), maxStars);
+                        star(1220 - measure(line, Face::Body, 22) - 18, 98, 11, 0, gold, {18, 18, 22, 255});
+                        text(1220, 84, line, st);
+                    }
+                    if (tiers) {
+                        const auto &tier = career.tiers[tierAt];
+                        const auto &venue = venueList[size_t(tier.venue)];
+                        const bool open = career.tierOpen(scores, tierAt);
+                        // Venue card.
+                        plate(50, 136, 500, 312);
+                        text(76, 156, tr("VENUE {} OF {}", tierAt + 1, tiers), marker(22, ink::marker, -1));
+                        auto vn = stencil(38, open ? ink::chrome : lockInk, open ? SDL_Color{116, 122, 138, 255} : lockInk);
+                        vn.maxWidth = 450;
+                        text(76, 190, tr(venue.name), vn);
+                        wrap(78, 246, 440, tr(venue.blurb), 18, open ? ink::white : lockInk);
+                        text(78, 352, tr("capacity {}", grouped(venue.capacity)), body(18, ink::dim));
+                        star(86, 404, 10, 0, gold, {18, 18, 22, 255});
+                        text(104, 392, tr("{} / {} stars here", career.tierStars(scores, tierAt), 5 * int(tier.songs.size())),
+                             body(20, ink::white));
+                        if (!open)
+                            sticker(440, 300, 54, -12, ink::blood, tr("LOCKED"));
+                        // One pip per venue.
+                        for (size_t t = 0; t < tiers; ++t) {
+                            const float x = 80 + float(t) * (440.f / std::max<size_t>(1, tiers - 1 ? tiers - 1 : 1));
+                            const bool tOpen = career.tierOpen(scores, t);
+                            const bool done = tOpen && career.cleared(scores, career.tiers[t].songs.back());
+                            const SDL_Color fill = done ? gold : tOpen ? ink::acid : SDL_Color{50, 50, 58, 255};
+                            if (t == tierAt)
+                                glow(x, 490, 70, 70, alpha(fill, .5f));
+                            disc(x, 490, t == tierAt ? 15 : 11, t == tierAt ? 15 : 11, fill, mix(fill, {0, 0, 0, 255}, .4f), 24);
+                            if (t + 1 < tiers)
+                                thickLine(x + 16, 490, x + 440.f / std::max<size_t>(1, tiers - 1) - 16, 490, 3,
+                                          career.tierOpen(scores, t + 1) ? ink::acid : SDL_Color{50, 50, 58, 255});
+                        }
+                        auto pipHint = body(16, ink::dim);
+                        pipHint.align = Align::Center;
+                        text(300, 516, tr("left / right to change venue"), pipHint);
+                        // Setlist.
+                        plate(590, 136, 640, 82.f + 74 * float(tier.songs.size()));
+                        text(616, 154, tr("SETLIST"), marker(24, ink::marker, -1));
+                        const bool encoreOpen = career.encoreOpen(scores, tierAt);
+                        for (size_t i = 0; i < tier.songs.size(); ++i) {
+                            const auto &g = tier.songs[i];
+                            const float y = 196 + 74 * float(i);
+                            const bool encore = i + 1 == tier.songs.size() && tier.songs.size() > 1;
+                            const bool playable = open && (!encore || encoreOpen);
+                            if (i == careerSong) {
+                                glow(910, y + 30, 700, 110, alpha(ink::acid, .16f));
+                                rect(604, y, 612, 64, {255, 255, 255, 24});
+                                rect(604, y, 5, 64, ink::acid);
+                            }
+                            auto nm = body(25, playable ? ink::white : lockInk);
+                            nm.maxWidth = encore ? 330 : 420;
+                            text(624, y + 4, g.name, nm);
+                            auto ar = body(17, playable ? ink::dim : SDL_Color{80, 80, 90, 255});
+                            ar.maxWidth = 420;
+                            text(624, y + 36, g.artist, ar);
+                            if (encore)
+                                sticker(960, y + 32, 30, -8, encoreOpen ? SDL_Color{226, 32, 44, 255} : lockInk, tr("ENCORE"));
+                            const int st = career.stars(scores, g);
+                            for (int k = 0; k < 5; ++k)
+                                star(1062 + k * 32, y + 32, 12, 0, k < st ? gold : SDL_Color{55, 55, 64, 255}, {18, 18, 22, 255});
+                            if (encore && !encoreOpen && open) {
+                                auto why = body(14, lockInk);
+                                why.align = Align::Right;
+                                text(1210, y + 50, tr("clear 3 songs"), why);
+                            }
+                        }
+                    }
+                    hints({{glyphAccept, tr("PLAY")}, {glyphAlt, tr("SHOP")}, {"X", tr("NEW CAREER")}, {glyphBack, tr("BACK")}});
+                } else {
+                    auto head = stencil(64, ink::chrome, {116, 122, 138, 255});
+                    head.glow = alpha(ink::crt, .5f);
+                    text(60, 28, tr("SHOP"), head);
+                    text(64, 104, tr("looks for the stage"), marker(24, {198, 200, 212, 255}, -2));
+                    cashLine();
+                    plate(50, 150, 600, 40.f + 40 * float(items.size()));
+                    static const char *const kinds[3] = {"guitar", "jacket", "stage"};
+                    for (size_t i = 0; i < items.size(); ++i) {
+                        const auto &it = items[i];
+                        const float y = 168 + 40 * float(i);
+                        if (i == shopRow) {
+                            rect(64, y - 2, 572, 38, {255, 255, 255, 26});
+                            rect(64, y - 2, 5, 38, ink::acid);
+                        }
+                        if (it.kind != career::Item::Stage) {
+                            const SDL_Color sw = {Uint8(it.color >> 16), Uint8(it.color >> 8), Uint8(it.color), 255};
+                            disc(92, y + 17, 11, 11, sw, mix(sw, {0, 0, 0, 255}, .4f), 16);
+                        } else
+                            glow(92, y + 17, 34, 34, {255, 150, 40, 220});
+                        text(116, y + 2, tr(it.name), body(22, ink::white));
+                        text(330, y + 6, tr(kinds[it.kind]), body(16, ink::dim));
+                        const bool owned = career.owns(it.id);
+                        const bool equipped = (it.kind == career::Item::Guitar && career.guitar == it.id) ||
+                                              (it.kind == career::Item::Jacket && career.jacket == it.id) ||
+                                              (it.kind == career::Item::Stage && owned && career.pyro);
+                        auto pr = body(20, equipped ? ink::acid : owned ? ink::white : career.cash >= it.price ? gold : lockInk);
+                        pr.align = Align::Right;
+                        text(620, y + 4, equipped ? tr("EQUIPPED") : owned ? tr("OWNED") : "$ " + grouped(it.price), pr);
+                    }
+                    const auto &sel = items[std::min(shopRow, items.size() - 1)];
+                    auto pv = marker(26, {198, 200, 212, 255}, -3);
+                    pv.align = Align::Center;
+                    text(940, 600, tr(sel.kind == career::Item::Stage ? "preview: fire columns in star power"
+                                                                      : "preview on stage"),
+                         pv);
+                    const bool owned = career.owns(sel.id);
+                    hints({{glyphAccept, tr(owned ? (sel.kind == career::Item::Stage ? "SWITCH ON / OFF" : "EQUIP") : "BUY")},
+                           {glyphBack, tr("BACK")}});
+                }
+                if (ui - careerNewsAt < 6 && !careerNews.empty()) {
+                    const float in = std::min(1.0f, float(ui - careerNewsAt) * 4);
+                    tape(640, 640, 820 * in, 64, -1.5f);
+                    auto n = marker(30, ink::marker, -1.5f);
+                    n.align = Align::Center, n.maxWidth = 760;
+                    text(640, 616, careerNews + (careerCash.empty() ? "" : "   " + careerCash), n);
+                }
+                if (!message.empty())
+                    text(60, 590, message, marker(22, messageInk(), -1));
             } else if (screen == Screen::Library) {
                 wall(ui, ink::crt);
                 text(58, 24, tr(practiceMode ? "PRACTICE" : "QUICKPLAY"), stencil(74, ink::chrome, {116, 122, 138, 255}));
@@ -4552,6 +4966,8 @@ int main(int argc, char **argv) {
                     cues.power = session->powerActive, cues.failed = session->failed;
                     cues.meter = session->meter, cues.meterRed = Session::meterRed;
                     cues.held = frets;
+                    cues.venue = careerRun && careerTier < career.tiers.size() ? career.tiers[careerTier].venue : -1;
+                    dress(cues, nullptr);
                     stage::draw(cues);
                 } else
                     wall(ui, session->powerActive ? ink::power : ink::crt);
@@ -4941,6 +5357,39 @@ int main(int argc, char **argv) {
                     text(484, 12, line, style);
                 }
             }
+#ifndef __SWITCH__
+            // Desktop screenshots of the career screens for development:
+            // SWITCH_HERO_OPEN=career|shop|setup [--screenshot FILE.bmp]
+            if (const char *open = std::getenv("SWITCH_HERO_OPEN"); open && !smoke) {
+                static int frames = 0;
+                const std::string o = open;
+                if (frames == 0 && (screen == Screen::Main || screen == Screen::Language)) {
+                    if (o == "setup") {
+                        careerSetup = 2, careerBand = career::bandName(careerSeed);
+                    } else {
+                        if (!career.active) {
+                            std::vector<std::pair<fs::path, std::pair<std::string, std::string>>> pool;
+                            for (const auto &e : entries)
+                                if (e.error.empty())
+                                    pool.push_back({e.folder, {e.name, e.artist}});
+                            career.tiers = career::buildSetlists(pool);
+                            career.active = !career.tiers.empty(), career.band = career::bandName(careerSeed);
+                            career.cash = 1850;
+                        }
+                        careerSetup = -1;
+                    }
+                    if (const char *t = std::getenv("SWITCH_HERO_TIER"))
+                        careerTier = size_t(std::atoi(t));
+                    if (const char *r = std::getenv("SWITCH_HERO_ROW"))
+                        careerSong = shopRow = size_t(std::atoi(r));
+                    screen = o == "shop" ? Screen::Shop : Screen::Career;
+                }
+                if (++frames == 120 && !shot.empty()) {
+                    screenshot(shot);
+                    running = false;
+                }
+            }
+#endif
             if (smoke && ++smokeFrames == 360) {
                 if (screen != Screen::Playing || session->hits < 2 || !audio.error().empty())
                     throw std::runtime_error("Virtual controller gameplay smoke failed");

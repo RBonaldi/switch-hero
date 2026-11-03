@@ -14,6 +14,11 @@ struct Cues {
     double meter = .5;    // rock meter, 0 (booed off) to 1
     double meterRed = .28; // below this the crowd turns
     uint8_t held = 0;     // frets held, bit 0 = green
+    // Career: which venue (0 garage .. 7 stadium, -1 the Quickplay club) and
+    // what the band bought in the shop.
+    int venue = -1;
+    unsigned guitarColor = 0x1f9e99, jacketColor = 0x1a1a1c;
+    bool pyro = false;
 };
 // Draws the whole backdrop, replacing look::wall(). Call before the highway.
 void draw(const Cues &cues);

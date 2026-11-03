@@ -260,6 +260,31 @@ struct Show { // what everyone reacts to this frame
     uint8_t held;
 };
 
+// How each venue dresses the stage. Index 8 is the Quickplay club.
+struct VenueLook {
+    SDL_Color keyA, keyB, fillA, fillB; // light palettes the show drifts between
+    int led;        // 0 none, 1 small screen, 2 full wall, 3 full wall and side screens
+    int lamps;      // lamps on the truss (0: bare bulbs hanging from the ceiling)
+    int backdrop;   // 0 brick, 1 black wall, 2 open sky at sunset
+    float crowd;    // how full the pit is, 0..1
+    float level;    // overall brightness
+};
+const VenueLook venueLooks[9] = {
+    {{255, 190, 110, 255}, {255, 150, 80, 255}, {90, 70, 50, 255}, {70, 60, 60, 255}, 0, 0, 0, .25f, .8f},     // garage
+    {{255, 170, 70, 255}, {60, 200, 190, 255}, {120, 70, 30, 255}, {30, 100, 100, 255}, 1, 3, 0, .45f, .9f}, // tavern
+    {{140, 230, 80, 255}, {250, 220, 60, 255}, {40, 90, 40, 255}, {90, 80, 30, 255}, 1, 4, 1, .6f, 1},        // campus
+    {{245, 80, 180, 255}, {70, 220, 255, 255}, {110, 30, 90, 255}, {30, 90, 140, 255}, 2, 5, 1, .75f, 1},    // neon club
+    {{255, 60, 40, 255}, {255, 150, 40, 255}, {120, 20, 20, 255}, {110, 60, 20, 255}, 2, 5, 0, .85f, .9f},   // underground
+    {{255, 160, 80, 255}, {200, 90, 220, 255}, {150, 80, 60, 255}, {90, 50, 130, 255}, 2, 5, 2, 1, 1},       // sunset festival
+    {{110, 180, 255, 255}, {240, 240, 255, 255}, {40, 70, 160, 255}, {90, 90, 130, 255}, 3, 7, 1, 1, 1.05f}, // arena
+    {{255, 200, 90, 255}, {255, 255, 235, 255}, {140, 100, 40, 255}, {120, 120, 110, 255}, 3, 9, 2, 1, 1.1f}, // stadium
+    {{255, 176, 90, 255}, {245, 80, 180, 255}, {80, 120, 255, 255}, {60, 200, 190, 255}, 2, 5, 1, .8f, 1},    // quickplay club
+};
+const VenueLook *vl = &venueLooks[8];
+V3 hexColor(unsigned c) { return {((c >> 16) & 255) / 255.f, ((c >> 8) & 255) / 255.f, (c & 255) / 255.f}; }
+V3 guitarFinish{.12f, .62f, .6f}, jacketColour{.1f, .1f, .11f};
+bool pyroOn = false;
+
 // ------------------------------------------------------------ people
 struct Style {
     V3 skin, top, jacket, pants, shoes, hair;
@@ -457,11 +482,13 @@ void guitarist(const Show &s) {
     const float nod = s.failed ? .5f : .06f + bangOf(s, .45f * s.energy) - .35f * s.miss;
     Rig k = rig(root, -.32f, s.failed ? .25f : .08f + bangOf(s, .12f * s.energy) - .2f * s.miss, 0,
                 s.failed ? .12f : .04f + .07f * s.energy * (1 - s.ph) + (s.power ? .06f : 0), nod, s.power ? .26f : .2f);
-    legs(k, caioS);
-    trunk(k, caioS);
-    head(k, caioS, s.failed ? 0 : (1 - s.ph) * s.energy * .8f - s.miss);
+    Style caio = caioS;
+    caio.jacket = jacketColour;
+    legs(k, caio);
+    trunk(k, caio);
+    head(k, caio, s.failed ? 0 : (1 - s.ph) * s.energy * .8f - s.miss);
     const Axe g = strap(k, s.failed ? -.1f : (s.power ? 1.05f : .5f + .06f * std::sin(float(s.beat) * Pi * .5f)));
-    axe(g, .48f, {.12f, .62f, .6f}, false);
+    axe(g, .48f, guitarFinish, false);
     int lane = -1;
     for (int i = 0; i < 5; ++i)
         if (s.held & (1 << i)) {
@@ -471,8 +498,8 @@ void guitarist(const Show &s) {
     const float along = lane < 0 ? .32f : .5f - lane * .08f;
     const V3 fret = g.bodyC + g.along * (.12f + .48f * (1 - along)) + g.face * .04f - g.across * .03f;
     const V3 pick = g.bodyC + g.along * -.04f + g.face * .07f + g.across * (.04f - .12f * s.hit);
-    arm(k.shoulderR, fret, k.body.r + V3{0, -1, -.3f}, caioS);
-    arm(k.shoulderL, pick, k.body.r * -1 + V3{0, -.4f, -.6f}, caioS);
+    arm(k.shoulderR, fret, k.body.r + V3{0, -1, -.3f}, caio);
+    arm(k.shoulderL, pick, k.body.r * -1 + V3{0, -.4f, -.6f}, caio);
 }
 
 void bassist(const Show &s) {
@@ -551,7 +578,8 @@ void drummer(const Show &s) {
 }
 
 // ------------------------------------------------------------ the set
-std::array<V3, 5> lampPos;
+std::array<V3, 9> lampPos;
+int lampCount = 5;
 void stageSet(const Show &s, SDL_Color key) {
     const V3 deck = {.13f, .12f, .14f}, metal = {.32f, .33f, .36f}, black = {.06f, .06f, .07f};
     // Floor, in planks so the light pools have something to fall across.
@@ -561,12 +589,37 @@ void stageSet(const Show &s, SDL_Color key) {
     }
     flatQuad({-10, -1.5f, 1.3f}, {10, -1.5f, 1.3f}, {10, 0, 1.3f}, {-10, 0, 1.3f}, {0, 0, 1}, black);
     // Back wall and the LED screen on it (emissive).
-    flatQuad({-12, 0, -6}, {12, 0, -6}, {12, 8, -6}, {-12, 8, -6}, {0, 0, 1}, {.04f, .04f, .05f});
+    if (vl->backdrop == 2) {
+        // No back wall outdoors: a sunset sky behind a scaffold, drawn as is.
+        emissive = true;
+        const V3 sky[4] = {{.12f, .06f, .2f}, {.45f, .14f, .3f}, {.95f, .45f, .2f}, {1.f, .7f, .35f}};
+        for (int i = 0; i < 3; ++i) {
+            const float y0 = 9 - i * 3.f, y1 = y0 - 3;
+            tri({-30, y0, -14}, {30, y0, -14}, {30, y1, -14}, {0, 0, 1}, {0, 0, 1}, {0, 0, 1}, sky[i] * .5f + sky[i + 1] * .5f);
+            tri({-30, y0, -14}, {30, y1, -14}, {-30, y1, -14}, {0, 0, 1}, {0, 0, 1}, {0, 0, 1}, sky[i] * .5f + sky[i + 1] * .5f);
+        }
+        emissive = false;
+        for (float x : {-6.f, 6.f})
+            box({x, 3.5f, -6}, .12f, 3.5f, .12f, {.2f, .2f, .22f});
+        box({0, 7, -6}, 6.2f, .12f, .12f, {.2f, .2f, .22f});
+    } else if (vl->backdrop == 0) {
+        // Brick: rows of slightly different reds.
+        for (int row = 0; row < 16; ++row)
+            for (int col = 0; col < 12; ++col) {
+                const float x0 = -12 + col * 2.f + (row % 2) * 1.f, y0 = row * .5f;
+                const float k = .7f + .3f * hash01(uint32_t(row * 31 + col));
+                flatQuad({x0 + .03f, y0 + .03f, -6}, {x0 + 1.97f, y0 + .03f, -6}, {x0 + 1.97f, y0 + .47f, -6},
+                         {x0 + .03f, y0 + .47f, -6}, {0, 0, 1}, V3{.32f, .13f, .1f} * k);
+            }
+        flatQuad({-12, 0, -6.01f}, {12, 0, -6.01f}, {12, 8, -6.01f}, {-12, 8, -6.01f}, {0, 0, 1}, {.08f, .06f, .05f});
+    } else
+        flatQuad({-12, 0, -6}, {12, 0, -6}, {12, 8, -6}, {-12, 8, -6}, {0, 0, 1}, {.04f, .04f, .05f});
     emissive = true;
-    const int cols = 26, rows = 10;
-    const float x0 = -5.2f, y0 = .8f, cw = 10.4f / cols, ch = 3.6f / rows;
+    const int cols = vl->led == 1 ? 12 : 26, rows = vl->led == 1 ? 6 : 10;
+    const float wallW = vl->led == 1 ? 4.2f : 10.4f, wallH = vl->led == 1 ? 2.0f : 3.6f;
+    const float x0 = -wallW / 2, y0 = vl->led == 1 ? 1.6f : .8f, cw = wallW / cols, ch = wallH / rows;
     const V3 on = col3(key);
-    for (int i = 0; i < cols; ++i) {
+    for (int i = 0; i < (vl->led ? cols : 0); ++i) {
         const float wave = .5f + .5f * std::sin(float(s.beat) * Pi * .5f + i * .5f);
         const float level = s.failed ? 0 : (.12f + .8f * s.energy * wave) * (.7f + .3f * (1 - s.ph));
         const int litRows = int(std::round(level * rows));
@@ -579,6 +632,13 @@ void stageSet(const Show &s, SDL_Color key) {
                      {x + .02f, y + ch - .02f, -5.95f}, {0, 0, 1}, c);
         }
     }
+    // Side screens at the arena and stadium: a pulse of the key colour.
+    if (vl->led == 3)
+        for (float x : {-7.4f, 7.4f}) {
+            const float k = s.failed ? .05f : .25f + .5f * s.energy * std::pow(1 - s.ph, 2.0f);
+            flatQuad({x - 1.2f, 2.2f, -1.6f}, {x + 1.2f, 2.2f, -1.6f}, {x + 1.2f, 4.0f, -1.6f}, {x - 1.2f, 4.0f, -1.6f},
+                     {0, 0, 1}, on * k + V3{.05f, .05f, .07f});
+        }
     emissive = false;
     // Drum riser.
     box({0, .25f, -4.2f}, 1.7f, .25f, 1.1f, {.1f, .1f, .12f});
@@ -594,23 +654,32 @@ void stageSet(const Show &s, SDL_Color key) {
             for (float dy : {-.22f, .22f})
                 cylinder({x, .55f + i * 1.1f + dy, -.84f}, {x, .55f + i * 1.1f + dy, -.83f}, .2f, .2f, {.03f, .03f, .03f}, 10);
         }
-    // Truss and lamps.
-    box({0, 5.3f, -1.2f}, 8.6f, .12f, .12f, metal);
-    box({0, 5.62f, -1.2f}, 8.6f, .06f, .06f, metal);
-    for (float x : {-8.6f, 8.6f})
-        box({x, 2.7f, -1.2f}, .14f, 2.7f, .14f, metal);
-    const float xs[5] = {-4.6f, -2.3f, 0, 2.3f, 4.6f};
-    for (int i = 0; i < 5; ++i) {
-        lampPos[size_t(i)] = {xs[i], 5.0f, -1.1f};
-        cylinder({xs[i], 5.2f, -1.2f}, {xs[i], 4.95f, -1.0f}, .16f, .18f, {.08f, .08f, .09f}, 8);
+    // Truss and lamps, or bulbs on a wire in the garage.
+    lampCount = vl->lamps ? vl->lamps : 3;
+    if (vl->lamps) {
+        box({0, 5.3f, -1.2f}, 8.6f, .12f, .12f, metal);
+        box({0, 5.62f, -1.2f}, 8.6f, .06f, .06f, metal);
+        for (float x : {-8.6f, 8.6f})
+            box({x, 2.7f, -1.2f}, .14f, 2.7f, .14f, metal);
+    }
+    for (int i = 0; i < lampCount; ++i) {
+        const float x = lampCount == 1 ? 0 : -5.4f + 10.8f * i / float(lampCount - 1);
+        if (vl->lamps) {
+            lampPos[size_t(i)] = {x, 5.0f, -1.1f};
+            cylinder({x, 5.2f, -1.2f}, {x, 4.95f, -1.0f}, .16f, .18f, {.08f, .08f, .09f}, 8);
+        } else {
+            const float bx = (i - 1) * 3.2f;
+            lampPos[size_t(i)] = {bx, 3.3f, -.8f};
+            cylinder({bx, 6, -.8f}, {bx, 3.4f, -.8f}, .01f, .01f, {.1f, .1f, .1f}, 4, false);
+        }
     }
 }
 
 void beams(const Show &s, const SDL_Color key, float level) {
-    for (int i = 0; i < 5; ++i) {
+    for (int i = 0; i < lampCount; ++i) {
         const V3 lamp = lampPos[size_t(i)];
         const float swing = (s.failed ? 0 : .9f * s.energy) * std::sin(float(s.beat) * Pi * .5f + (i % 2) * Pi);
-        const V3 spot = {lamp.x + swing * 1.6f - (i - 2) * .3f, 0, -.6f + .6f * std::cos(float(s.beat) * Pi * .25f + i)};
+        const V3 spot = {lamp.x + swing * 1.6f - (lamp.x / 5.4f) * .6f, 0, -.6f + .6f * std::cos(float(s.beat) * Pi * .25f + i)};
         const V3 a = cam.view(lamp), b = cam.view(spot);
         if (a.z < .3f || b.z < .3f)
             continue;
@@ -649,9 +718,29 @@ void sparks(const Show &s) {
     }
 }
 
+void fireColumns(const Show &s) {
+    if (!pyroOn || !s.power)
+        return;
+    const float burst = .35f + .65f * std::pow(1 - s.ph, 1.5f);
+    // Flanking the drum riser and behind the front line, where the highway leaves them in view.
+    for (V3 at : {V3{-2.1f, .5f, -4.3f}, V3{2.1f, .5f, -4.3f}, V3{-3.6f, 0, -1.8f}, V3{3.5f, 0, -1.8f}}) {
+        const float x = at.x;
+        const V3 base = cam.view(at);
+        if (base.z < .3f)
+            continue;
+        const SDL_FPoint p = cam.screen(base);
+        const float h = cam.focal * (1.6f + 2.2f * burst) / base.z, w = cam.focal * .9f / base.z;
+        for (int i = 0; i < 9; ++i) {
+            const float t = i / 8.f;
+            glow(p.x + std::sin(float(s.time) * 13 + i * 2 + x) * w * .15f, p.y - h * t, w * (1.4f - t),
+                 w * (1.6f - t), rgb(255, int(210 - 130 * t), int(90 - 80 * t), int(255 * burst * (1 - t * .5f))));
+        }
+    }
+}
+
 void crowd(const Show &s, SDL_Color key, float level) {
     for (int row = 0; row < 2; ++row) {
-        const int count = row ? 15 : 19;
+        const int count = std::max(2, int((row ? 15 : 19) * (.3f + .7f * vl->crowd)));
         const float baseY = row ? 708.f : 652.f, r = row ? 24.f : 17.f;
         for (int i = 0; i < count; ++i) {
             const uint32_t id = uint32_t(row * 100 + i);
@@ -659,7 +748,7 @@ void crowd(const Show &s, SDL_Color key, float level) {
             const float bob = std::pow(1 - frac(s.beat + hash01(id * 5) * .2), 3.0f) * 7 * s.energy;
             const float y = baseY + (hash01(id * 7) - .5f) * 14 + bob;
             const SDL_Color body = row ? rgb(12, 11, 16) : rgb(20, 18, 25);
-            if (!s.failed && hash01(id * 11) < s.energy * 1.1f - .1f) {
+            if (!s.failed && hash01(id * 11) < (s.energy * 1.1f - .1f) * (.5f + .5f * vl->crowd)) {
                 const float wave = std::sin(float(s.beat) * Pi + hash01(id * 13) * 6) * .25f;
                 for (int side : {-1, 1}) {
                     if (side > 0 && hash01(id * 17) < .5f)
@@ -730,6 +819,10 @@ void draw(const Cues &input) {
             c.multiplier = 4, c.meter = .95;
         if (const char *b = std::getenv("SWITCH_HERO_STAGE_BEAT"))
             c.beat += std::atof(b);
+        if (const char *v = std::getenv("SWITCH_HERO_VENUE"))
+            c.venue = std::atoi(v);
+        if (std::getenv("SWITCH_HERO_PYRO"))
+            c.pyro = true, c.guitarColor = 0xd9a93a, c.jacketColor = 0xdcdcde;
     }
 #endif
     if (c.time < mem.lastTime - .25 || c.hits < mem.hits || c.misses < mem.misses)
@@ -752,17 +845,19 @@ void draw(const Cues &input) {
         s.energy = 0;
     s.hit = ease(c.time - mem.lastHit, .14), s.miss = ease(c.time - mem.lastMiss, .5);
 
+    vl = &venueLooks[c.venue >= 0 && c.venue < 8 ? c.venue : 8];
+    guitarFinish = hexColor(c.guitarColor), jacketColour = hexColor(c.jacketColor), pyroOn = c.pyro;
     SDL_Color key, fill;
-    float level = 1;
+    float level = vl->level;
     if (c.power)
         key = rgb(120, 205, 255), fill = rgb(60, 110, 220);
     else if (s.danger)
-        key = rgb(255, 70, 55), fill = rgb(140, 30, 30), level = .75f;
+        key = rgb(255, 70, 55), fill = rgb(140, 30, 30), level *= .75f;
     else if (c.failed)
-        key = rgb(110, 110, 130), fill = rgb(40, 40, 60), level = .35f;
+        key = rgb(110, 110, 130), fill = rgb(40, 40, 60), level *= .35f;
     else {
         const float t = .5f + .5f * std::sin(float(c.beat) * Pi / 16);
-        key = mix(rgb(255, 176, 90), rgb(245, 80, 180), t), fill = mix(rgb(80, 120, 255), rgb(60, 200, 190), t);
+        key = mix(vl->keyA, vl->keyB, t), fill = mix(vl->fillA, vl->fillB, t);
     }
     placeCamera(s);
     const float pulse = .85f + .15f * std::pow(1 - s.ph, 2.0f) * s.energy;
@@ -799,6 +894,7 @@ void draw(const Cues &input) {
         }
     }
     sparks(s);
+    fireColumns(s);
     crowd(s, key, level);
 }
 } // namespace fret::stage
