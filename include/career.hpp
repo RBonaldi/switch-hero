@@ -25,7 +25,7 @@ const std::vector<Venue> &venues(); // always eight, in career order
 
 struct Gig { // one song of a setlist
     std::string folder, name, artist;
-    int rating = -1; // song.ini diff_guitar, -1 when unknown
+    int rating = -1; // how hard the chart is to play (chartWeight x 100), -1 when unknown
 };
 struct Tier {
     int venue = 0;
@@ -54,6 +54,7 @@ struct Career {
     std::set<int> beaten;            // rivals beaten in a duel
     std::string guitar = "guitar-teal", jacket = "jacket-black";
     bool pyro = false; // fire columns bought and switched on
+    bool stale = false; // setlists from before they were ordered by the charts themselves
 
     void load(const fs::path &path);
     void save(const fs::path &path) const;
@@ -74,9 +75,17 @@ struct Career {
     bool owns(const std::string &id) const;
 };
 
-// Setlists from the library: songs sorted by their guitar rating (unknown
-// ratings sit in the middle) and song length, dealt into up to eight venues.
-std::vector<Tier> buildSetlists(const std::vector<std::pair<fs::path, std::pair<std::string, std::string>>> &songs);
+// How hard a chart is to play, from the notes themselves rather than the
+// charter's own rating, which no two charters agree on: notes per second over
+// the song, its densest four seconds, and how many notes are chords.
+double chartWeight(const Track &track);
+// Setlists from the library, as a ladder: each song is weighed on the guitar
+// chart it will actually be played on at `difficulty` and the songs are dealt,
+// lightest first, into up to eight venues. Songs without a chart at that
+// difficulty are left out while there are enough others (they would be played
+// on a harder one). Songs whose chart cannot be read fall back to song.ini.
+std::vector<Tier> buildSetlists(const std::vector<std::pair<fs::path, std::pair<std::string, std::string>>> &songs,
+                                int difficulty);
 // A guitar difficulty from a folder's song.ini, or -1.
 int ratingOf(const fs::path &folder);
 // Gives the venues that host a duel (the club, the festival, the stadium)

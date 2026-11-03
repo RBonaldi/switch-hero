@@ -39,7 +39,7 @@ int main() {
     check(ratingOf(root / "song0") == 0 && ratingOf(root / "song1") == 3, "song.ini ratings are read");
     check(ratingOf(root / "song41") == -1, "a missing rating is -1");
 
-    const auto tiers = buildSetlists(pool);
+    const auto tiers = buildSetlists(pool, 3);
     check(tiers.size() == 8, "a big library makes eight venues");
     check(tiers.front().venue == 0 && tiers.back().venue == 7, "venues run from the garage to the stadium");
     for (const auto &t : tiers) {
@@ -49,8 +49,23 @@ int main() {
                   "the encore is the hardest song of its venue");
     }
     check((tiers.front().songs.front().rating) <= (tiers.back().songs.front().rating), "the career gets harder");
-    check(buildSetlists({}).empty(), "no songs, no career");
-    check(buildSetlists({pool[0], pool[1], pool[2]}).size() == 1, "a tiny library still makes one venue");
+    check(buildSetlists({}, 3).empty(), "no songs, no career");
+    check(buildSetlists({pool[0], pool[1], pool[2]}, 3).size() == 1, "a tiny library still makes one venue");
+
+    // Weighing charts by their notes: denser and chordier is harder.
+    auto chartOf = [](double gap, int chordEvery) {
+        Track t;
+        for (int i = 0; i < 240; ++i) {
+            Note n;
+            n.time = i * gap;
+            n.mask = uint8_t(chordEvery && i % chordEvery == 0 ? 0b00011 : 1 << (i % 3));
+            t.notes.push_back(n);
+        }
+        return t;
+    };
+    check(chartWeight(chartOf(.5, 0)) < chartWeight(chartOf(.25, 0)), "more notes a second weigh more");
+    check(chartWeight(chartOf(.25, 0)) < chartWeight(chartOf(.25, 2)), "chords weigh more");
+    check(chartWeight(Track{}) == 0, "an empty chart weighs nothing");
 
     Career c;
     c.active = true, c.band = "Test Band", c.difficulty = 3, c.tiers = tiers;
@@ -88,6 +103,14 @@ int main() {
     check(back.tiers.size() == tiers.size() && back.tiers[3].songs[2].folder == tiers[3].songs[2].folder,
           "save keeps the setlists");
     check(back.award(tiers[0].songs[0], 0, 5) == 0, "save keeps what was paid");
+    check(!back.stale, "a saved career is current");
+    {
+        std::ofstream old(root / "old.cfg");
+        old << "switch-hero career 1\nband\tOld\ntier\t0\ngig\tsong0\tSong 0\tBand\t0\n";
+    }
+    Career old;
+    old.load(root / "old.cfg");
+    check(old.active && old.stale && old.band == "Old", "a career from before the ladder loads, marked for rebuilding");
     Career none;
     none.load(root / "missing.cfg");
     check(!none.active, "no file, no career");

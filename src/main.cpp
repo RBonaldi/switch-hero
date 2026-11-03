@@ -2412,6 +2412,22 @@ int main(int argc, char **argv) {
                             careerSetup = 1, careerBand = career::bandName(careerSeed);
                         } else {
                             careerSetup = -1;
+                            if (career.stale) {
+                                // Setlists from before they were weighed by their charts: deal them
+                                // again as a ladder, keeping the band, cash, shop and beaten rivals.
+                                std::vector<std::pair<fs::path, std::pair<std::string, std::string>>> pool;
+                                for (const auto &e : entries)
+                                    if (e.error.empty())
+                                        pool.push_back({e.folder, {e.name, e.artist}});
+                                auto tiers = career::buildSetlists(pool, career.difficulty);
+                                if (!tiers.empty()) {
+                                    career.tiers = std::move(tiers);
+                                    career.stale = false;
+                                    saveCareer();
+                                    careerNews = tr("Setlists rebuilt: easiest charts first, harder every venue");
+                                    careerCash.clear(), careerNewsAt = now();
+                                }
+                            }
                             // Open on the furthest venue reached.
                             careerTier = 0;
                             for (size_t t = 0; t < career.tiers.size(); ++t)
@@ -2474,7 +2490,7 @@ int main(int argc, char **argv) {
                     for (const auto &e : entries)
                         if (e.error.empty())
                             pool.push_back({e.folder, {e.name, e.artist}});
-                    auto tiers = career::buildSetlists(pool);
+                    auto tiers = career::buildSetlists(pool, careerSetup);
                     if (tiers.empty()) {
                         audio.playSfx(Sfx::Back);
                         message = tr("Add some songs first: the career builds its setlists from your library");
@@ -5549,7 +5565,7 @@ int main(int argc, char **argv) {
                             for (const auto &e : entries)
                                 if (e.error.empty())
                                     pool.push_back({e.folder, {e.name, e.artist}});
-                            career.tiers = career::buildSetlists(pool);
+                            career.tiers = career::buildSetlists(pool, career.difficulty);
                             career.active = !career.tiers.empty(), career.band = career::bandName(careerSeed);
                             career.cash = 1850;
                         }

@@ -24,6 +24,7 @@ const std::tuple<const char *, const char *, const char *> translationTable[] = 
     {"OPTIONS", "OPÇÕES", "OPCIONES"},
     {"QUIT", "SAIR", "SALIR"},
     // Career mode
+    {"Setlists rebuilt: easiest charts first, harder every venue", "Setlists refeitos: das mais fáceis às mais difíceis, subindo a cada casa", "Setlists rehechos: de las más fáciles a las más difíciles, subiendo en cada local"},
     {"YOU", "VOCÊ", "TÚ"},
     {"{} is waiting: play the encore first", "{} está esperando: toque o bis primeiro", "{} te espera: toca el bis primero"},
     {"{} wins this one. Throw more attacks!", "{} levou essa. Jogue mais ataques!", "{} gana esta. ¡Lanza más ataques!"},

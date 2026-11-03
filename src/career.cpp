@@ -96,23 +96,72 @@ int ratingOf(const fs::path &folder) {
     return -1;
 }
 
-std::vector<Tier> buildSetlists(const std::vector<std::pair<fs::path, std::pair<std::string, std::string>>> &songs) {
+double chartWeight(const Track &track) {
+    const auto &notes = track.notes;
+    if (notes.empty())
+        return 0;
+    const double length = std::max(30.0, notes.back().time - notes.front().time);
+    const double perSecond = double(notes.size()) / length;
+    // The densest four seconds: a song is as hard as its hardest run.
+    size_t peak = 0;
+    for (size_t i = 0, j = 0; i < notes.size(); ++i) {
+        while (notes[i].time - notes[j].time > 4)
+            ++j;
+        peak = std::max(peak, i - j + 1);
+    }
+    size_t chords = 0;
+    for (const auto &n : notes) {
+        int frets = 0;
+        for (int l = 0; l < 5; ++l)
+            frets += (n.mask >> l) & 1;
+        chords += frets > 1;
+    }
+    return perSecond + .5 * (double(peak) / 4) + 1.5 * double(chords) / double(notes.size());
+}
+
+std::vector<Tier> buildSetlists(const std::vector<std::pair<fs::path, std::pair<std::string, std::string>>> &songs,
+                                int difficulty) {
     struct Candidate {
         Gig gig;
-        float order;
+        double weight;
+        bool exact; // has a guitar chart at the career's difficulty
     };
-    std::vector<Candidate> all;
+    std::vector<Candidate> all, unread;
     for (const auto &[folder, meta] : songs) {
         Candidate c;
         c.gig.folder = folder.filename().string(), c.gig.name = meta.first, c.gig.artist = meta.second;
-        c.gig.rating = ratingOf(folder);
-        // Unknown ratings go in the middle rather than opening or closing the career.
-        c.order = c.gig.rating < 0 ? 3.5f : float(c.gig.rating);
-        all.push_back(std::move(c));
+        try {
+            const Song song = loadSong(folder);
+            // The chart it will be played on: this difficulty, or the nearest one.
+            const Track *best = nullptr;
+            for (int step = 0; step < 4 && !best; ++step)
+                for (int d : {difficulty - step, difficulty + step})
+                    for (const auto &t : song.tracks)
+                        if (!best && t.instrument == "Guitar" && t.difficulty == d && !t.notes.empty())
+                            best = &t;
+            if (!best)
+                continue; // no guitar at all
+            c.exact = best->difficulty == difficulty;
+            c.weight = chartWeight(*best);
+            c.gig.rating = int(std::lround(c.weight * 100));
+            all.push_back(std::move(c));
+        } catch (const std::exception &) {
+            // Unreadable here: weigh it by its song.ini rating, unknown in the middle.
+            const int r = ratingOf(folder);
+            c.exact = false, c.weight = 1 + 1.1 * (r < 0 ? 3.5 : r), c.gig.rating = int(std::lround(c.weight * 100));
+            unread.push_back(std::move(c));
+        }
     }
+    // Songs that would be played on a harder chart than the career's are left
+    // out while ten or more songs can be played at the right difficulty.
+    const size_t exact = size_t(std::count_if(all.begin(), all.end(), [](const Candidate &c) { return c.exact; }));
+    if (exact >= 10)
+        all.erase(std::remove_if(all.begin(), all.end(), [](const Candidate &c) { return !c.exact; }), all.end());
+    if (all.empty())
+        all = std::move(unread);
     std::stable_sort(all.begin(), all.end(), [](const Candidate &a, const Candidate &b) {
-        if (a.order != b.order)
-            return a.order < b.order;
+        if (a.weight != b.weight)
+            return a.weight < b.weight;
         return lower(a.gig.name) < lower(b.gig.name);
     });
     std::vector<Tier> tiers;
@@ -133,9 +182,8 @@ std::vector<Tier> buildSetlists(const std::vector<std::pair<fs::path, std::pair<
             if (pick < all.size())
                 tier.songs.push_back(all[pick].gig);
         }
-        // The hardest song of each venue closes it as the encore.
-        std::stable_sort(tier.songs.begin(), tier.songs.end(),
-                         [](const Gig &a, const Gig &b) { return (a.rating < 0 ? 3.5 : a.rating) < (b.rating < 0 ? 3.5 : b.rating); });
+        // Lightest first, and the heaviest closes the venue as its encore.
+        std::stable_sort(tier.songs.begin(), tier.songs.end(), [](const Gig &a, const Gig &b) { return a.rating < b.rating; });
         if (!tier.songs.empty())
             tiers.push_back(std::move(tier));
     }
@@ -158,8 +206,12 @@ void Career::load(const fs::path &path) {
     *this = Career{};
     std::ifstream in(path, std::ios::binary);
     std::string line;
-    if (!std::getline(in, line) || trim(line) != "switch-hero career 1")
+    if (!std::getline(in, line))
         return;
+    line = trim(line);
+    if (line != "switch-hero career 1" && line != "switch-hero career 2")
+        return;
+    stale = line == "switch-hero career 1"; // ordered by song.ini ratings: rebuild
     while (std::getline(in, line)) {
         const auto parts = split(line);
         if (parts.empty())
@@ -216,7 +268,7 @@ void Career::save(const fs::path &path) const {
         std::ofstream out(temp, std::ios::binary | std::ios::trunc);
         if (!out)
             throw std::runtime_error("Cannot save the career: " + path.string());
-        out << "switch-hero career 1\n";
+        out << "switch-hero career 2\n";
         out << "band\t" << field(band) << "\ndifficulty\t" << difficulty << "\ncash\t" << cash << "\nguitar\t" << guitar
             << "\njacket\t" << jacket << "\npyro\t" << (pyro ? 1 : 0) << '\n';
         for (const auto &id : owned)
