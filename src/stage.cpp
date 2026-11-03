@@ -284,6 +284,9 @@ const VenueLook *vl = &venueLooks[8];
 V3 hexColor(unsigned c) { return {((c >> 16) & 255) / 255.f, ((c >> 8) & 255) / 255.f, (c & 255) / 255.f}; }
 V3 guitarFinish{.12f, .62f, .6f}, jacketColour{.1f, .1f, .11f};
 bool pyroOn = false;
+int rivalOn = -1;
+V3 rivalColour{1, 1, 1};
+float rivalHurt = 0, rivalStrike = 0;
 
 // ------------------------------------------------------------ people
 struct Style {
@@ -518,6 +521,93 @@ void bassist(const Show &s) {
     const V3 pluck = g.bodyC + g.along * -.02f + g.face * .07f + g.across * (.02f - .06f * (1 - frac(s.beat * 2)));
     arm(k.shoulderR, fret, k.body.r + V3{0, -1, -.3f}, lunaS);
     arm(k.shoulderL, pluck, k.body.r * -1 + V3{0, -.4f, -.6f}, lunaS);
+}
+
+// The duel rivals: original characters, each with a look of their own.
+void rivalFigure(const Show &s) {
+    const V3 root = {-2.05f, 0, .5f}; // a step closer than the singer: this is their show too
+    const float bang = s.failed ? 0 : bangOf(s, .35f);
+    const float lean = .06f + (rivalOn == 1 ? bangOf(s, .15f) : 0) - .25f * rivalHurt;
+    Rig k = rig(root, .32f, lean, rivalOn == 0 ? .05f * std::sin(float(s.beat) * Pi * .5f) : 0,
+                .04f + .05f * (1 - s.ph), (rivalOn == 2 ? .02f : .05f + bang) - .3f * rivalHurt, .2f);
+    Style st;
+    float neck = .55f;
+    if (rivalOn == 0) { // Dona Rubi: silver bun, red dress, cat-eye glasses, a resonator
+        st = {{.84f, .66f, .54f}, {.62f, .06f, .12f}, {.55f, .04f, .1f}, {.62f, .06f, .12f}, {.08f, .06f, .06f},
+              {.85f, .85f, .88f}, 3, true};
+        legs(k, st);
+        // The dress: a flared skirt over the legs.
+        frustum(k.pelvis + V3{0, -.5f, 0}, k.pelvis + k.body.u * .08f, k.body.f, .3f, .24f, .17f, .12f, st.top);
+        trunk(k, st);
+        const Frame &h = k.head;
+        ellipsoid(k.headC, h, .1f, .125f, .11f, st.skin);
+        ellipsoid(h.at(k.headC, 0, .035f, -.01f), h, .112f, .11f, .118f, st.hair, 10, 4, 0);
+        sphere(h.at(k.headC, 0, .1f, -.1f), .07f, st.hair, 8, 5);                              // the bun
+        box(h.at(k.headC, 0, .015f, .1f), h, .1f, .022f, .02f, {.75f, .1f, .2f});              // cat-eye frames
+        box(h.at(k.headC, -.09f, .04f, .095f), h, .025f, .012f, .015f, {.75f, .1f, .2f});
+        box(h.at(k.headC, .09f, .04f, .095f), h, .025f, .012f, .015f, {.75f, .1f, .2f});
+        neck = .35f;
+    } else if (rivalOn == 1) { // Viktor Kade: blond mane, leopard jacket, white double neck
+        st = {{.9f, .72f, .6f}, {.08f, .08f, .09f}, {.9f, .62f, .16f}, {.06f, .06f, .07f}, {.5f, .08f, .08f},
+              {.95f, .85f, .5f}, 1, true};
+        legs(k, st);
+        trunk(k, st);
+        for (int i = 0; i < 9; ++i) { // leopard spots on the jacket
+            const float a = (i % 3 - 1) * .1f, b = .12f + (i / 3) * .12f;
+            const V3 at = k.pelvis + k.body.u * b + k.body.r * (a + (a > 0 ? .07f : -.07f)) + k.body.f * .135f;
+            box(at, k.body, .018f, .014f, .004f, {.25f, .15f, .05f});
+        }
+        head(k, st, s.failed ? 0 : (1 - s.ph) * .9f);
+        neck = .6f;
+    } else { // MK-77: chrome boxes, a visor and an antenna
+        st = {{.7f, .72f, .78f}, {.55f, .58f, .64f}, {.4f, .42f, .48f}, {.3f, .32f, .36f}, {.2f, .2f, .22f},
+              {.2f, .2f, .22f}, 0, true};
+        legs(k, st);
+        box(k.pelvis, k.body, .17f, .1f, .12f, st.pants);
+        box(k.pelvis + k.body.u * .3f, k.body, .22f, .2f, .13f, st.top);
+        box(k.pelvis + k.body.u * .3f + k.body.f * .135f, k.body, .08f, .06f, .005f, rivalColour); // chest light
+        cylinder(k.neck - k.body.u * .04f, k.headC - k.head.u * .08f, .05f, .05f, st.jacket, 6);
+        box(k.headC, k.head, .12f, .11f, .11f, st.top);
+        emissive = true;
+        box(k.head.at(k.headC, 0, .01f, .112f), k.head, .1f, .025f, .003f,
+            rivalColour * (.7f + .3f * std::pow(1 - s.ph, 2.0f)));
+        emissive = false;
+        cylinder(k.head.at(k.headC, .06f, .11f, 0), k.head.at(k.headC, .08f, .28f, 0), .008f, .006f, st.jacket, 4, false);
+        sphere(k.head.at(k.headC, .08f, .29f, 0), .02f, rivalColour, 6, 4);
+        neck = .7f;
+    }
+    // The guitar: a resonator, a double neck, or a V.
+    const Axe g = strap(k, s.failed ? -.1f : neck + .08f * std::sin(float(s.beat) * Pi * .5f));
+    Frame fr;
+    fr.r = g.along, fr.u = g.across, fr.f = g.face;
+    if (rivalOn == 0) {
+        slab(fr.at(g.bodyC, -.04f, 0, 0), fr, [](float) { return .2f; }, 24, .07f, {.78f, .78f, .82f}, {.5f, .5f, .55f});
+        slab(fr.at(g.bodyC, -.04f, 0, .036f), fr, [](float) { return .1f; }, 16, .005f, {.55f, .55f, .6f}, {.4f, .4f, .45f});
+        box(fr.at(g.bodyC, .12f + .24f, 0, .01f), fr, .24f, .028f, .016f, {.3f, .18f, .1f});
+    } else if (rivalOn == 1) {
+        for (float off : {-.06f, .07f}) {
+            box(fr.at(g.bodyC, .14f + .24f, off, .01f), fr, .24f, .024f, .014f, {.3f, .2f, .1f});
+            box(fr.at(g.bodyC, .66f, off, .005f), fr, .06f, .035f, .012f, {.92f, .92f, .9f});
+        }
+        slab(fr.at(g.bodyC, -.04f, 0, 0), fr, [](float a) { return .2f * (1 + .25f * std::pow(std::max(0.0f, std::cos(a - 1.3f)), 6.0f)); },
+             28, .05f, {.92f, .92f, .9f}, {.6f, .6f, .58f});
+    } else {
+        // Two long wings swept back from the neck: a V.
+        for (int side : {-1, 1})
+            box(fr.at(g.bodyC, -.12f, side * .1f, 0), Frame{frameFrom(g.across * float(side) + g.along * -.6f, g.face).u * -1,
+                                                              frameFrom(g.across * float(side) + g.along * -.6f, g.face).r,
+                                                              g.face},
+                .05f, .2f, .025f, {.1f, .1f, .12f});
+        box(fr.at(g.bodyC, .12f + .24f, 0, .01f), fr, .24f, .026f, .016f, {.15f, .15f, .17f});
+        emissive = true;
+        box(fr.at(g.bodyC, .12f + .24f, 0, .028f), fr, .24f, .006f, .002f, rivalColour);
+        emissive = false;
+    }
+    const float walk = frac(s.beat / 2);
+    const V3 fret = g.bodyC + g.along * (.3f + .15f * std::sin(walk * 2 * Pi)) + g.face * .04f - g.across * .03f;
+    const V3 pick = g.bodyC + g.along * -.04f + g.face * .07f + g.across * (.03f - .1f * (1 - frac(s.beat * 2)));
+    arm(k.shoulderR, fret, k.body.r + V3{0, -1, -.3f}, st);
+    arm(k.shoulderL, pick, k.body.r * -1 + V3{0, -.4f, -.6f}, st);
 }
 
 void drummer(const Show &s) {
@@ -821,6 +911,10 @@ void draw(const Cues &input) {
             c.beat += std::atof(b);
         if (const char *v = std::getenv("SWITCH_HERO_VENUE"))
             c.venue = std::atoi(v);
+        if (const char *r = std::getenv("SWITCH_HERO_RIVAL")) {
+            static const unsigned colors[3] = {0xd2283c, 0xffb428, 0x3cdcff};
+            c.rival = std::atoi(r) % 3, c.rivalColor = colors[c.rival];
+        }
         if (std::getenv("SWITCH_HERO_PYRO"))
             c.pyro = true, c.guitarColor = 0xd9a93a, c.jacketColor = 0xdcdcde;
     }
@@ -847,6 +941,9 @@ void draw(const Cues &input) {
 
     vl = &venueLooks[c.venue >= 0 && c.venue < 8 ? c.venue : 8];
     guitarFinish = hexColor(c.guitarColor), jacketColour = hexColor(c.jacketColor), pyroOn = c.pyro;
+    rivalOn = c.rival >= 0 && c.rival <= 2 ? c.rival : -1;
+    rivalColour = hexColor(c.rivalColor);
+    rivalHurt = ease(c.time - c.rivalHurtAt, .6), rivalStrike = ease(c.time - c.rivalStrikeAt, .8);
     SDL_Color key, fill;
     float level = vl->level;
     if (c.power)
@@ -881,8 +978,12 @@ void draw(const Cues &input) {
         shadow(p, .45f, .3f);
     }
     drummer(s);
-    bassist(s);
-    singer(s);
+    if (rivalOn < 0)
+        bassist(s); // the rival has the left side of the stage to themselves
+    if (rivalOn >= 0)
+        rivalFigure(s);
+    else
+        singer(s);
     guitarist(s);
     flushTris();
     beams(s, key, level);
@@ -892,6 +993,19 @@ void draw(const Cues &input) {
             const SDL_FPoint q = cam.screen(v);
             glow(q.x, q.y, 220, 220, rgb(255, 40, 40, int(110 * s.miss)));
         }
+    }
+    if (rivalOn >= 0) {
+        // The rival's own light on their side, and a flash of it when they strike.
+        const V3 v = cam.view({-2.05f, 1.2f, .5f});
+        if (v.z > .3f) {
+            const SDL_FPoint q = cam.screen(v);
+            const SDL_Color rc = rgb(int(rivalColour.x * 255), int(rivalColour.y * 255), int(rivalColour.z * 255));
+            glow(q.x, q.y, cam.focal * 2.6f / v.z, cam.focal * 3.2f / v.z, alpha(rc, .22f + .5f * rivalStrike));
+            if (rivalHurt > 0)
+                glow(q.x, q.y - 40, 240, 240, rgb(255, 255, 255, int(150 * rivalHurt)));
+        }
+        if (rivalStrike > 0)
+            rect(0, 0, W, H, rgb(int(rivalColour.x * 255), int(rivalColour.y * 255), int(rivalColour.z * 255), int(60 * rivalStrike)));
     }
     sparks(s);
     fireColumns(s);

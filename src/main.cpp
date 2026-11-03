@@ -2,6 +2,7 @@
 #include "background.hpp"
 #include "stage.hpp"
 #include "career.hpp"
+#include "duel.hpp"
 #include "calibration.hpp"
 #include "clock.hpp"
 #include "downloader.hpp"
@@ -1526,6 +1527,11 @@ int main(int argc, char **argv) {
         std::string careerBand, careerNews, careerCash;
         double careerNewsAt = -1e9;
         bool careerHadEncore = false, careerHadNext = false;
+        // A rival duel in progress (career only). See duel.hpp.
+        std::unique_ptr<duel::Duel> duelState;
+        int duelRival = -1;
+        bool duelRun = false;
+        uint8_t duelLastFrets = 0;
         // What the band wears on stage: the equipped shop items, or one being previewed.
         auto dress = [&](stage::Cues &c, const career::Item *preview) {
             auto colour = [&](const std::string &id, unsigned fallback) {
@@ -1987,7 +1993,24 @@ int main(int argc, char **argv) {
         auto newRun = [&]() {
             session = std::make_unique<Session>(*song, song->tracks[trackIndex]);
             session->gamepadMode = settings.gamepad && !settings.wiiGuitar;
-            session->noFail = settings.noFail || practiceMode;
+            session->noFail = (settings.noFail || practiceMode) && !duelRun;
+            duelState.reset();
+#ifndef __SWITCH__
+            if (const char *d = std::getenv("SWITCH_HERO_DUEL"))
+                duelRun = true, duelRival = std::atoi(d) % 3, session->noFail = true;
+#endif
+            if (duelRun)
+                duelState = std::make_unique<duel::Duel>(*session->track, duelRival, uint32_t(SDL_GetTicks()));
+#ifndef __SWITCH__
+            if (const char *fx = std::getenv("SWITCH_HERO_DUEL_FX"); fx && duelState) {
+                const std::string f = fx;
+                auto &e = duelState->onPlayer;
+                e.kind = f == "lefty" ? duel::Attack::Lefty : f == "speed" ? duel::Attack::Speed
+                       : f == "blackout" ? duel::Attack::Blackout : duel::Attack::String;
+                e.from = 0, e.until = 1e9, e.lane = 1, e.presses = 4;
+                duelState->armed = 1;
+            }
+#endif
             session->window = Session::windowFor(session->track->difficulty, settings.hitWindow);
             if (practiceMode)
                 session->startAt(practiceFrom);
@@ -2378,7 +2401,7 @@ int main(int argc, char **argv) {
                     mainRow = quitRow;
                     audio.playSfx(Sfx::Move);
                 } else if (accept || (back && mainRow == quitRow)) {
-                    careerRun = false;
+                    careerRun = false, duelRun = false;
                     if (mainRow == 0) {
                         audio.playSfx(Sfx::Select, .7f);
                         message.clear();
@@ -2472,7 +2495,8 @@ int main(int argc, char **argv) {
             } else if (screen == Screen::Career) {
                 const size_t tiers = career.tiers.size();
                 careerTier = std::min(careerTier, tiers ? tiers - 1 : 0);
-                const size_t songsHere = tiers ? career.tiers[careerTier].songs.size() : 0;
+                const size_t songsHere =
+                    tiers ? career.tiers[careerTier].songs.size() + (career.tiers[careerTier].rival >= 0 ? 1 : 0) : 0;
                 if ((left || right) && tiers) {
                     const size_t next = left ? (careerTier ? careerTier - 1 : 0) : std::min(tiers - 1, careerTier + 1);
                     if (next != careerTier) {
@@ -2497,15 +2521,19 @@ int main(int argc, char **argv) {
                     screen = Screen::Main;
                 } else if (accept && songsHere) {
                     const auto &tier = career.tiers[careerTier];
-                    const bool encore = careerSong + 1 == songsHere && songsHere > 1;
-                    if (!career.tierOpen(scores, careerTier)) {
+                    const bool isDuel = tier.rival >= 0 && careerSong == tier.songs.size();
+                    const bool encore = !isDuel && careerSong + 1 == tier.songs.size() && tier.songs.size() > 1;
+                    if (isDuel && !career.duelOpen(scores, careerTier)) {
+                        audio.playSfx(Sfx::Back);
+                        message = tr("{} is waiting: play the encore first", duel::rivals()[size_t(tier.rival)].name);
+                    } else if (!career.tierOpen(scores, careerTier)) {
                         audio.playSfx(Sfx::Back);
                         message = tr("Locked: play the encore of the venue before this one");
                     } else if (encore && !career.encoreOpen(scores, careerTier)) {
                         audio.playSfx(Sfx::Back);
                         message = tr("The crowd wants more first: clear three songs to unlock the encore");
                     } else {
-                        const auto &gig = tier.songs[careerSong];
+                        const auto &gig = isDuel ? tier.duel : tier.songs[careerSong];
                         try {
                             auto loaded = std::make_unique<Song>(loadSong(root / gig.folder));
                             const int d = nearestDifficulty(*loaded, "Guitar", career.difficulty);
@@ -2522,6 +2550,7 @@ int main(int argc, char **argv) {
                             careerHadEncore = career.encoreOpen(scores, careerTier);
                             careerHadNext = career.tierOpen(scores, careerTier + 1);
                             practiceMode = false, multiplayer = false, careerRun = true;
+                            duelRun = isDuel, duelRival = isDuel ? tier.rival : -1;
                             message.clear();
                             audio.playSfx(Sfx::Select);
                             start();
@@ -3315,14 +3344,29 @@ int main(int argc, char **argv) {
                     audio.playSfx(Sfx::Back);
                     screen = Screen::Paused;
                 } else {
-                    if (press(3) || key(SDL_SCANCODE_LSHIFT))
+                    const bool throwing = press(3) || key(SDL_SCANCODE_LSHIFT);
+                    if (duelState) {
+                        if (throwing && duelState->fire(time) != duel::Attack::None)
+                            audio.playSfx(Sfx::StarPower);
+                    } else if (throwing)
                         session->activate();
+                    uint8_t playFrets = frets;
+                    if (duelState) {
+                        duelState->update(time, uint8_t(frets & ~duelLastFrets));
+                        duelLastFrets = frets;
+                        playFrets = duelState->mask(frets, time);
+                    }
                     // On a keyboard, holding W wobbles a virtual bar.
                     if (keys[SDL_SCANCODE_W])
                         whammyInput = float(.5 + .5 * std::sin(now() * 25));
                     session->whammy(whammyInput, time);
-                    session->update(time, frets, up || down || press(1) || key(SDL_SCANCODE_SPACE),
+                    session->update(time, playFrets, up || down || press(1) || key(SDL_SCANCODE_SPACE),
                                     press(1) || key(SDL_SCANCODE_SPACE), pressTime(time));
+                    if (duelState)
+                        while (session->power >= .25) { // each star phrase arms an attack instead
+                            session->power -= .25;
+                            duelState->armed = std::min(2, duelState->armed + 1);
+                        }
                     if (time < runStart) {
                         // Count the song (or the practice loop) in with drumstick clicks.
                         const int count = int(std::ceil(runStart - time));
@@ -3381,6 +3425,10 @@ int main(int argc, char **argv) {
                         audio.playSfx(Sfx::Fail);
                         frozen = time;
                         screen = Screen::Results;
+                        if (duelState) {
+                            careerNews = tr("{} wins this one. Throw more attacks!", duel::rivals()[size_t(duelRival)].name);
+                            careerCash.clear(), careerNewsAt = now();
+                        }
                     } else if (auto e = audio.error(); !e.empty()) {
                         audio.pause(true);
                         screen = Screen::Paused;
@@ -3391,7 +3439,8 @@ int main(int argc, char **argv) {
                         lastLoopPct = judged ? session->hits * 100 / judged : 100;
                         ++practiceLoops;
                         restartLoop();
-                    } else if (!practiceMode && audio.position() > audio.duration() + 0.3) {
+                    } else if (!practiceMode && (audio.position() > audio.duration() + 0.3 ||
+                                                 (duelState && duelState->rivalOut()))) {
                         audio.pause(true);
                         audio.playSfx(Sfx::Win);
                         frozen = time;
@@ -3427,6 +3476,24 @@ int main(int argc, char **argv) {
                             else
                                 careerNews = tr("Gig done at {}", tr(career::venues()[size_t(tier.venue)].name));
                             careerNewsAt = now();
+                            if (duelState) {
+                                const auto &rv = duel::rivals()[size_t(duelRival)];
+                                const bool won = duelState->rivalOut() || session->meter >= duelState->rivalMeter;
+                                if (won && !career.beaten.count(duelRival)) {
+                                    career.beaten.insert(duelRival);
+                                    const int prize = career::Career::duelPrize(duelRival);
+                                    career.cash += prize;
+                                    careerCash = tr("+${} prize", grouped(prize));
+                                }
+                                if (won && careerTier + 1 < career.tiers.size())
+                                    careerNews = tr("You beat {}! NEW VENUE: {}", rv.name,
+                                                    tr(career::venues()[size_t(career.tiers[careerTier + 1].venue)].name));
+                                else if (won)
+                                    careerNews = tr("You beat {}! {} rules the world", rv.name, career.band);
+                                else
+                                    careerNews = tr("{} wins this one. Throw more attacks!", rv.name),
+                                    careerCash.clear();
+                            }
                             saveCareer();
                         }
                         try {
@@ -4038,7 +4105,7 @@ int main(int argc, char **argv) {
                         pipHint.align = Align::Center;
                         text(300, 516, tr("left / right to change venue"), pipHint);
                         // Setlist.
-                        plate(590, 136, 640, 82.f + 74 * float(tier.songs.size()));
+                        plate(590, 136, 640, 82.f + 74 * float(tier.songs.size() + (tier.rival >= 0 ? 1 : 0)));
                         text(616, 154, tr("SETLIST"), marker(24, ink::marker, -1));
                         const bool encoreOpen = career.encoreOpen(scores, tierAt);
                         for (size_t i = 0; i < tier.songs.size(); ++i) {
@@ -4068,6 +4135,30 @@ int main(int argc, char **argv) {
                                 text(1210, y + 50, tr("clear 3 songs"), why);
                             }
                         }
+                    }
+                    if (tiers && career.tiers[tierAt].rival >= 0) {
+                        const auto &tier = career.tiers[tierAt];
+                        const auto &rv = duel::rivals()[size_t(tier.rival)];
+                        const SDL_Color rc = {Uint8(rv.color >> 16), Uint8(rv.color >> 8), Uint8(rv.color), 255};
+                        const float y = 196 + 74 * float(tier.songs.size());
+                        const bool open = career.duelOpen(scores, tierAt), beaten = career.beaten.count(tier.rival) > 0;
+                        if (careerSong == tier.songs.size()) {
+                            glow(910, y + 30, 700, 110, alpha(rc, .2f));
+                            rect(604, y, 612, 64, {255, 255, 255, 24});
+                            rect(604, y, 5, 64, rc);
+                        }
+                        sticker(650, y + 32, 30, -8, open ? rc : lockInk, tr("DUEL"));
+                        auto nm = stencil(28, open ? ink::chrome : lockInk, open ? rc : lockInk);
+                        nm.maxWidth = 380;
+                        text(694, y + 2, rv.name, nm);
+                        auto ti = body(16, open ? ink::dim : SDL_Color{80, 80, 90, 255});
+                        ti.maxWidth = 360;
+                        text(696, y + 38, tr(rv.title), ti);
+                        auto st = body(18, beaten ? ink::acid : open ? gold : lockInk);
+                        st.align = Align::Right;
+                        text(1210, y + 20, beaten ? tr("BEATEN") : open ? tr("+${} prize", grouped(career::Career::duelPrize(tier.rival)))
+                                                                    : tr("after the encore"),
+                             st);
                     }
                     hints({{glyphAccept, tr("PLAY")}, {glyphAlt, tr("SHOP")}, {"X", tr("NEW CAREER")}, {glyphBack, tr("BACK")}});
                 } else {
@@ -4968,10 +5059,89 @@ int main(int argc, char **argv) {
                     cues.held = frets;
                     cues.venue = careerRun && careerTier < career.tiers.size() ? career.tiers[careerTier].venue : -1;
                     dress(cues, nullptr);
+                    if (duelState) {
+                        cues.rival = duelRival, cues.rivalColor = duel::rivals()[size_t(duelRival)].color;
+                        cues.rivalHurtAt = duelState->thrownAt, cues.rivalStrikeAt = duelState->receivedAt;
+                    }
                     stage::draw(cues);
                 } else
                     wall(ui, session->powerActive ? ink::power : ink::crt);
-                highway(*song, *session, settings, time - settings.videoMs / 1000, frets, ui);
+                // A rival's attack bends the highway: mirrored, or the notes rushing in.
+                Settings looks = settings;
+                if (duelState && duelState->suffering(duel::Attack::Lefty, time))
+                    looks.lefty = !looks.lefty;
+                if (duelState && duelState->suffering(duel::Attack::Speed, time))
+                    looks.travel *= .55;
+                highway(*song, *session, looks, time - settings.videoMs / 1000, frets, ui);
+                if (duelState) {
+                    const auto &rv = duel::rivals()[size_t(duelRival)];
+                    const SDL_Color rc = {Uint8(rv.color >> 16), Uint8(rv.color >> 8), Uint8(rv.color), 255};
+                    const auto &fx = duelState->onPlayer;
+                    // Blackout: the far end of the board goes dark, with a flicker.
+                    if (duelState->suffering(duel::Attack::Blackout, time)) {
+                        const Uint8 a = Uint8(250 - 20 * std::abs(std::sin(ui * 23)));
+                        rect(462, 140, 356, 200, {4, 4, 6, a});
+                        quad({438, 340}, {842, 340}, {880, 470}, {400, 470}, {4, 4, 6, a}, {4, 4, 6, a}, {4, 4, 6, 0},
+                             {4, 4, 6, 0});
+                    }
+                    // Broken string: the dead fret, and how many presses mend it.
+                    if (duelState->suffering(duel::Attack::String, time)) {
+                        const int lane = looks.lefty ? 4 - fx.lane : fx.lane;
+                        const float x = 640 + (lane - 2) * 116.5f;
+                        thickLine(x - 34, 566, x + 34, 634, 9, ink::blood);
+                        thickLine(x + 34, 566, x - 34, 634, 9, ink::blood);
+                        auto n = stencil(30, {255, 255, 255, 255}, {255, 120, 120, 255});
+                        n.align = Align::Center;
+                        text(x, 512, tr("{}x", fx.presses), n);
+                    }
+                    // The tug of war at the top: band against rival.
+                    const float pw = float(session->meter), rw = float(duelState->rivalMeter);
+                    rect(480, 14, 320, 40, {10, 10, 14, 200});
+                    rect(484, 20, 152 * pw, 12, ink::acid);
+                    rect(644 + 152 * (1 - rw), 20, 152 * rw, 12, rc);
+                    auto nm = body(15, ink::white);
+                    nm.maxWidth = 150;
+                    text(484, 34, career.band, nm);
+                    nm.align = Align::Right;
+                    text(796, 34, rv.name, nm);
+                    auto vs = stencil(22, {255, 196, 60, 255}, {206, 26, 20, 255});
+                    vs.align = Align::Center;
+                    text(640, 16, "VS", vs);
+                    // Attacks: armed in hand, thrown, and received.
+                    if (duelState->armed > 0) {
+                        const float pulse = .6f + .4f * std::abs(std::sin(ui * 6));
+                        auto a = stencil(26, {255, 255, 255, 255}, {120, 220, 255, 255});
+                        a.glow = alpha(ink::power, .7f * pulse);
+                        text(940, 440, tr("ATTACK READY x{}", duelState->armed), a);
+                    }
+                    if (time - duelState->thrownAt < 2.2) {
+                        auto t = stencil(34, {200, 255, 120, 255}, {60, 160, 40, 255});
+                        t.align = Align::Center, t.glow = alpha(ink::acid, .6f);
+                        text(640, 96, tr("YOU THREW {}!", tr(duel::attackName(duelState->thrown))), t);
+                    }
+                    if (time < fx.until && fx.kind != duel::Attack::None) {
+                        auto r = stencil(30, {255, 255, 255, 255}, rc);
+                        r.align = Align::Center, r.glow = alpha(rc, .8f);
+                        text(640, 96, tr("{}: {}!", rv.name, tr(duel::attackName(fx.kind))), r);
+                        const float left = float((fx.until - time) / (fx.until - fx.from));
+                        rect(540, 134, 200 * left, 5, rc);
+                    }
+                    // The rival walks on: name, title and a word for the band.
+                    if (time < 5.5) {
+                        const float in = std::min(1.0f, float(time) * 3), out = std::min(1.0f, float(5.5 - time) * 2);
+                        const float a = in * out;
+                        rect(0, 250, W, 170, {0, 0, 0, Uint8(170 * a)});
+                        auto big = stencil(64, {255, 255, 255, Uint8(255 * a)}, alpha(rc, a));
+                        big.align = Align::Center, big.glow = alpha(rc, .8f * a);
+                        text(640, 262, rv.name, big);
+                        auto ti = marker(26, alpha({198, 200, 212, 255}, a), -1);
+                        ti.align = Align::Center;
+                        text(640, 336, tr(rv.title), ti);
+                        auto q = body(20, alpha(ink::white, a));
+                        q.align = Align::Center;
+                        text(640, 378, std::string("\"") + tr(rv.taunt) + "\"", q);
+                    }
+                }
                 // Call the timing. A hit that the game cannot tell you was tight is a
                 // hit that feels the same as one scraped in at the edge of the window,
                 // which is why landing notes read as mushy.

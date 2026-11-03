@@ -138,7 +138,19 @@ std::vector<Tier> buildSetlists(const std::vector<std::pair<fs::path, std::pair<
         if (!tier.songs.empty())
             tiers.push_back(std::move(tier));
     }
+    assignDuels(tiers);
     return tiers;
+}
+
+void assignDuels(std::vector<Tier> &tiers) {
+    // Rivals by venue: the Neon Club, the Sunset Festival and the stadium.
+    const int hosts[3] = {3, 5, 7};
+    for (int r = 0; r < 3; ++r)
+        for (auto &t : tiers)
+            if (t.venue == hosts[r] && t.rival < 0 && !t.songs.empty()) {
+                t.rival = r, t.duel = t.songs.back();
+                break;
+            }
 }
 
 void Career::load(const fs::path &path) {
@@ -167,6 +179,12 @@ void Career::load(const fs::path &path) {
                 pyro = parts[1] == "1";
             else if (k == "owned" && parts.size() > 1 && findItem(parts[1]))
                 owned.insert(parts[1]);
+            else if (k == "beaten" && parts.size() > 1)
+                beaten.insert(std::stoi(parts[1]));
+            else if (k == "duel" && parts.size() > 5 && !tiers.empty()) {
+                tiers.back().rival = std::clamp(std::stoi(parts[1]), 0, 2);
+                tiers.back().duel = {parts[2], parts[3], parts[4], std::stoi(parts[5])};
+            }
             else if (k == "paid" && parts.size() > 2)
                 paid[parts[1]] = std::stoi(parts[2]);
             else if (k == "tier" && parts.size() > 1) {
@@ -183,6 +201,11 @@ void Career::load(const fs::path &path) {
         }
     }
     active = !tiers.empty();
+    bool anyDuel = false;
+    for (const auto &t : tiers)
+        anyDuel = anyDuel || t.rival >= 0;
+    if (!anyDuel) // a career from before duels existed
+        assignDuels(tiers);
 }
 
 void Career::save(const fs::path &path) const {
@@ -197,6 +220,8 @@ void Career::save(const fs::path &path) const {
             << "\njacket\t" << jacket << "\npyro\t" << (pyro ? 1 : 0) << '\n';
         for (const auto &id : owned)
             out << "owned\t" << id << '\n';
+        for (int r : beaten)
+            out << "beaten\t" << r << '\n';
         for (const auto &[folder, stars] : paid)
             out << "paid\t" << field(folder) << '\t' << stars << '\n';
         for (const auto &t : tiers) {
@@ -204,6 +229,9 @@ void Career::save(const fs::path &path) const {
             for (const auto &g : t.songs)
                 out << "gig\t" << field(g.folder) << '\t' << field(g.name) << '\t' << field(g.artist) << '\t' << g.rating
                     << '\n';
+            if (t.rival >= 0)
+                out << "duel\t" << t.rival << '\t' << field(t.duel.folder) << '\t' << field(t.duel.name) << '\t'
+                    << field(t.duel.artist) << '\t' << t.duel.rating << '\n';
         }
         if (!out)
             throw std::runtime_error("Cannot save the career: " + path.string());
@@ -233,8 +261,14 @@ bool Career::tierOpen(const Scores &scores, size_t tier) const {
         return !tiers.empty();
     if (tier >= tiers.size())
         return false;
-    const auto &prev = tiers[tier - 1].songs;
-    return !prev.empty() && tierOpen(scores, tier - 1) && cleared(scores, prev.back());
+    const auto &before = tiers[tier - 1];
+    const auto &prev = before.songs;
+    return !prev.empty() && tierOpen(scores, tier - 1) && cleared(scores, prev.back()) &&
+           (before.rival < 0 || beaten.count(before.rival));
+}
+bool Career::duelOpen(const Scores &scores, size_t tier) const {
+    return tier < tiers.size() && tiers[tier].rival >= 0 && tierOpen(scores, tier) && !tiers[tier].songs.empty() &&
+           cleared(scores, tiers[tier].songs.back());
 }
 int Career::tierStars(const Scores &scores, size_t tier) const {
     int sum = 0;

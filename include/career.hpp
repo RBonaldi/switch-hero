@@ -30,6 +30,8 @@ struct Gig { // one song of a setlist
 struct Tier {
     int venue = 0;
     std::vector<Gig> songs; // the last one is the encore
+    int rival = -1;         // a duel after the encore at the big venues (duel.hpp), or -1
+    Gig duel;               // the song of that duel
 };
 
 struct Item {
@@ -49,6 +51,7 @@ struct Career {
     int cash = 0;
     std::map<std::string, int> paid; // stars already paid out, per song folder
     std::set<std::string> owned;     // shop item ids
+    std::set<int> beaten;            // rivals beaten in a duel
     std::string guitar = "guitar-teal", jacket = "jacket-black";
     bool pyro = false; // fire columns bought and switched on
 
@@ -60,6 +63,9 @@ struct Career {
     bool cleared(const Scores &scores, const Gig &gig) const;
     bool tierOpen(const Scores &scores, size_t tier) const;
     bool encoreOpen(const Scores &scores, size_t tier) const;
+    // The duel opens with the encore cleared; beating it opens the next venue.
+    bool duelOpen(const Scores &scores, size_t tier) const;
+    static int duelPrize(int rival) { return 1500 + 1500 * rival; }
     int tierStars(const Scores &scores, size_t tier) const;
     int totalStars(const Scores &scores) const;
     // Pays for stars not paid before, at this venue's rate. Returns the cash earned.
@@ -73,6 +79,9 @@ struct Career {
 std::vector<Tier> buildSetlists(const std::vector<std::pair<fs::path, std::pair<std::string, std::string>>> &songs);
 // A guitar difficulty from a folder's song.ini, or -1.
 int ratingOf(const fs::path &folder);
+// Gives the venues that host a duel (the club, the festival, the stadium)
+// their rival, fighting over the venue's encore. Old careers get them on load.
+void assignDuels(std::vector<Tier> &tiers);
 // An original band name, picked by `seed`.
 std::string bandName(unsigned seed);
 } // namespace fret::career

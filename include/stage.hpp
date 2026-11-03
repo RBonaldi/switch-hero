@@ -19,6 +19,11 @@ struct Cues {
     int venue = -1;
     unsigned guitarColor = 0x1f9e99, jacketColor = 0x1a1a1c;
     bool pyro = false;
+    // Duels: the rival takes the singer's spot (0 Dona Rubi, 1 Viktor Kade, 2 MK-77).
+    int rival = -1;
+    unsigned rivalColor = 0xffffff;
+    double rivalHurtAt = -1e9;   // song time the player's attack landed
+    double rivalStrikeAt = -1e9; // song time the rival's attack landed on the player
 };
 // Draws the whole backdrop, replacing look::wall(). Call before the highway.
 void draw(const Cues &cues);
