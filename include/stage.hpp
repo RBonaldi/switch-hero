@@ -24,6 +24,7 @@ struct Cues {
     unsigned rivalColor = 0xffffff;
     double rivalHurtAt = -1e9;   // song time the player's attack landed
     double rivalStrikeAt = -1e9; // song time the rival's attack landed on the player
+    int outcome = 0;             // after a duel: 1 the player won (celebrates), -1 the rival won
 };
 // Draws the whole backdrop, replacing look::wall(). Call before the highway.
 void draw(const Cues &cues);

@@ -19,6 +19,58 @@ Clone Hero's proprietary source.
 | **Multiplayer lobby** | **Four players** |
 | ![Multiplayer lobby](docs/lobby.jpg) | ![Four players](docs/multiplayer.jpg) |
 
+## Stage, career and rival duels (this fork)
+
+This fork adds a live 3D stage behind the highway, a career mode and rival
+duels. Every character, venue and rival is original to this game; none of them
+is, or is meant to suggest, a real musician or another game's cast.
+
+![The stage behind the highway](docs/stage.jpg)
+
+**The stage.** A low-poly 3D scene generated every frame: an original band
+(Nina on vocals, Caio on guitar, Luna on bass and Bento on drums), truss lights,
+an LED wall and a crowd. It plays along with you: everyone moves to the beat and
+harder as the multiplier climbs, the guitarist strums on your hits and follows the
+frets you hold, flinches on a miss, and star power turns the lights blue, raises
+the guitar and sends sparks up. The room goes red when the crowd turns on you.
+The camera cuts between shots every eight bars, mostly from above the crowd.
+Customize > Stage turns it off for the plain wall.
+
+| Star power at the stadium | The garage |
+|---|---|
+| ![Star power](docs/stage-power.jpg) | ![The garage](docs/venue-garage.jpg) |
+
+**Career.** From a garage to a stadium in eight venues, with setlists built from
+your own library, easiest charts first: four songs and an encore each. Clear three
+songs to unlock the encore; play the encore to unlock the next venue. Each venue
+dresses the stage its own way (brick and bare bulbs, a sunset sky, side screens),
+and the crowd grows with it. New stars earn cash for a shop of guitar finishes,
+jackets and fire columns, previewed live on stage. Career stars come from the
+same records as Quickplay, so nothing you have already played is lost.
+
+| New career | The road |
+|---|---|
+| ![New career](docs/career-new.jpg) | ![Career](docs/career.jpg) |
+| **The shop** | |
+| ![Shop](docs/shop.jpg) | |
+
+**Rival duels.** After the encore of the club, the festival and the stadium, a
+rival waits: Dona Rubi (a blues queen with a resonator), Viktor Kade (a shredder
+with a double-neck) and MK-77 (a robot). It is one on one: the band clears the
+stage. Star phrases arm attacks instead of star power, and both sides throw them:
+lefty flip, overdrive, blackout and a broken string you mash to mend. Run the
+rival's meter dry, or finish the song ahead, to win a prize and the next venue.
+The winner celebrates on stage; the loser hangs their head.
+
+| A duel | Won |
+|---|---|
+| ![Duel](docs/duel.jpg) | ![Duel won](docs/duel-won.jpg) |
+
+**Status of these additions:** built and played on the desktop build, with
+automated tests for the career and duel rules (`tests/career_tests.cpp`,
+`tests/duel_tests.cpp`), and cross-compiled for the Switch. Frame pacing of the
+3D stage on a console still needs checking with the timing overlay.
+
 What changed in this release is in [CHANGELOG.md](CHANGELOG.md).
 
 **Status:** the desktop build and all automated tests pass, and the Switch build

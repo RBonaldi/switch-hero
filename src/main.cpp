@@ -1532,6 +1532,7 @@ int main(int argc, char **argv) {
         int duelRival = -1;
         bool duelRun = false;
         uint8_t duelLastFrets = 0;
+        int duelOutcome = 0; // 1 won, -1 lost, 0 still playing
         // What the band wears on stage: the equipped shop items, or one being previewed.
         auto dress = [&](stage::Cues &c, const career::Item *preview) {
             auto colour = [&](const std::string &id, unsigned fallback) {
@@ -1995,6 +1996,7 @@ int main(int argc, char **argv) {
             session->gamepadMode = settings.gamepad && !settings.wiiGuitar;
             session->noFail = (settings.noFail || practiceMode) && !duelRun;
             duelState.reset();
+            duelOutcome = 0;
 #ifndef __SWITCH__
             if (const char *d = std::getenv("SWITCH_HERO_DUEL"))
                 duelRun = true, duelRival = std::atoi(d) % 3, session->noFail = true;
@@ -3426,6 +3428,7 @@ int main(int argc, char **argv) {
                         frozen = time;
                         screen = Screen::Results;
                         if (duelState) {
+                            duelOutcome = -1;
                             careerNews = tr("{} wins this one. Throw more attacks!", duel::rivals()[size_t(duelRival)].name);
                             careerCash.clear(), careerNewsAt = now();
                         }
@@ -3479,6 +3482,7 @@ int main(int argc, char **argv) {
                             if (duelState) {
                                 const auto &rv = duel::rivals()[size_t(duelRival)];
                                 const bool won = duelState->rivalOut() || session->meter >= duelState->rivalMeter;
+                                duelOutcome = won ? 1 : -1;
                                 if (won && !career.beaten.count(duelRival)) {
                                     career.beaten.insert(duelRival);
                                     const int prize = career::Career::duelPrize(duelRival);
@@ -5062,6 +5066,9 @@ int main(int argc, char **argv) {
                     if (duelState) {
                         cues.rival = duelRival, cues.rivalColor = duel::rivals()[size_t(duelRival)].color;
                         cues.rivalHurtAt = duelState->thrownAt, cues.rivalStrikeAt = duelState->receivedAt;
+                        cues.outcome = duelOutcome;
+                        if (duelOutcome && screen == Screen::Results) // keep the celebration moving
+                            cues.time = ui, cues.beat = ui * 2.2, cues.rivalHurtAt = cues.rivalStrikeAt = -1e9;
                     }
                     stage::draw(cues);
                 } else
@@ -5101,7 +5108,7 @@ int main(int argc, char **argv) {
                     rect(644 + 152 * (1 - rw), 20, 152 * rw, 12, rc);
                     auto nm = body(15, ink::white);
                     nm.maxWidth = 150;
-                    text(484, 34, career.band, nm);
+                    text(484, 34, career.band.empty() ? std::string(tr("YOU")) : career.band, nm);
                     nm.align = Align::Right;
                     text(796, 34, rv.name, nm);
                     auto vs = stencil(22, {255, 196, 60, 255}, {206, 26, 20, 255});

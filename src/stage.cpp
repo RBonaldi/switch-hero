@@ -285,6 +285,7 @@ V3 hexColor(unsigned c) { return {((c >> 16) & 255) / 255.f, ((c >> 8) & 255) / 
 V3 guitarFinish{.12f, .62f, .6f}, jacketColour{.1f, .1f, .11f};
 bool pyroOn = false;
 int rivalOn = -1;
+int outcome = 0; // after a duel: 1 the player won, -1 the rival won
 V3 rivalColour{1, 1, 1};
 float rivalHurt = 0, rivalStrike = 0;
 
@@ -475,7 +476,12 @@ void singer(const Show &s) {
     arm(k.shoulderL, hand, k.body.r * -1 + V3{0, -1, 0}, ninaS);
 }
 
-void guitarist(const Show &s) {
+void guitarist(const Show &in) {
+    Show s = in;
+    if (outcome < 0)
+        s.failed = true, s.power = false; // beaten: head down, guitar hanging
+    if (outcome > 0)
+        s.power = true, s.failed = false, s.energy = 1; // the winner jumps with the guitar up
     float hop = 0;
     if (s.power) {
         const float h = frac(s.beat / 2);
@@ -502,7 +508,9 @@ void guitarist(const Show &s) {
     const V3 fret = g.bodyC + g.along * (.12f + .48f * (1 - along)) + g.face * .04f - g.across * .03f;
     const V3 pick = g.bodyC + g.along * -.04f + g.face * .07f + g.across * (.04f - .12f * s.hit);
     arm(k.shoulderR, fret, k.body.r + V3{0, -1, -.3f}, caio);
-    arm(k.shoulderL, pick, k.body.r * -1 + V3{0, -.4f, -.6f}, caio);
+    // A winner's fist goes up instead of strumming.
+    const V3 strumHand = outcome > 0 ? k.shoulderL + V3{-.15f, .55f + .08f * std::sin(float(s.beat) * Pi), .1f} : pick;
+    arm(k.shoulderL, strumHand, k.body.r * -1 + V3{0, -.4f, -.6f}, caio);
 }
 
 void bassist(const Show &s) {
@@ -524,8 +532,14 @@ void bassist(const Show &s) {
 }
 
 // The duel rivals: original characters, each with a look of their own.
-void rivalFigure(const Show &s) {
-    const V3 root = {-2.05f, 0, .5f}; // a step closer than the singer: this is their show too
+void rivalFigure(const Show &in) {
+    Show s = in;
+    if (outcome > 0)
+        s.failed = true; // beaten
+    if (outcome < 0)
+        s.failed = false, s.energy = 1;
+    const float cheer = outcome < 0 ? std::sin(Pi * frac(s.beat / 2)) * .3f * (frac(s.beat / 2) < .5f ? 1.f : 0.f) : 0;
+    const V3 root = {-2.05f, cheer, .5f}; // a step closer than the singer: this is their show too
     const float bang = s.failed ? 0 : bangOf(s, .35f);
     const float lean = .06f + (rivalOn == 1 ? bangOf(s, .15f) : 0) - .25f * rivalHurt;
     Rig k = rig(root, .32f, lean, rivalOn == 0 ? .05f * std::sin(float(s.beat) * Pi * .5f) : 0,
@@ -605,7 +619,11 @@ void rivalFigure(const Show &s) {
     }
     const float walk = frac(s.beat / 2);
     const V3 fret = g.bodyC + g.along * (.3f + .15f * std::sin(walk * 2 * Pi)) + g.face * .04f - g.across * .03f;
-    const V3 pick = g.bodyC + g.along * -.04f + g.face * .07f + g.across * (.03f - .1f * (1 - frac(s.beat * 2)));
+    V3 pick = g.bodyC + g.along * -.04f + g.face * .07f + g.across * (.03f - .1f * (1 - frac(s.beat * 2)));
+    if (outcome < 0) // the rival gloats with a fist in the air
+        pick = k.shoulderL + V3{-.15f, .55f + .08f * std::sin(float(s.beat) * Pi), .1f};
+    if (outcome > 0) // and hangs their head when beaten
+        pick = k.shoulderL + V3{-.05f, -.5f, .08f};
     arm(k.shoulderR, fret, k.body.r + V3{0, -1, -.3f}, st);
     arm(k.shoulderL, pick, k.body.r * -1 + V3{0, -.4f, -.6f}, st);
 }
@@ -915,6 +933,8 @@ void draw(const Cues &input) {
             static const unsigned colors[3] = {0xd2283c, 0xffb428, 0x3cdcff};
             c.rival = std::atoi(r) % 3, c.rivalColor = colors[c.rival];
         }
+        if (const char *o = std::getenv("SWITCH_HERO_OUTCOME"))
+            c.outcome = std::atoi(o);
         if (std::getenv("SWITCH_HERO_PYRO"))
             c.pyro = true, c.guitarColor = 0xd9a93a, c.jacketColor = 0xdcdcde;
     }
@@ -944,6 +964,7 @@ void draw(const Cues &input) {
     rivalOn = c.rival >= 0 && c.rival <= 2 ? c.rival : -1;
     rivalColour = hexColor(c.rivalColor);
     rivalHurt = ease(c.time - c.rivalHurtAt, .6), rivalStrike = ease(c.time - c.rivalStrikeAt, .8);
+    outcome = rivalOn >= 0 ? c.outcome : 0;
     SDL_Color key, fill;
     float level = vl->level;
     if (c.power)
@@ -969,7 +990,9 @@ void draw(const Cues &input) {
     stageSet(s, key);
     flushTris();
     // Light pools and shadows on the floor, under everyone.
-    for (V3 p : {V3{-2.35f, 0, .15f}, V3{2.3f, 0, -.1f}, V3{-3.9f, 0, -2.7f}}) {
+    const std::vector<V3> standing = rivalOn >= 0 ? std::vector<V3>{{-2.05f, 0, .5f}, {2.3f, 0, -.1f}}
+                                                  : std::vector<V3>{{-2.35f, 0, .15f}, {2.3f, 0, -.1f}, {-3.9f, 0, -2.7f}};
+    for (V3 p : standing) {
         const V3 v = cam.view(p);
         if (v.z > .3f) {
             const SDL_FPoint q = cam.screen(v);
@@ -977,14 +1000,16 @@ void draw(const Cues &input) {
         }
         shadow(p, .45f, .3f);
     }
-    drummer(s);
-    if (rivalOn < 0)
-        bassist(s); // the rival has the left side of the stage to themselves
-    if (rivalOn >= 0)
+    if (rivalOn >= 0) {
+        // A duel is one on one: the band clears the stage for the guitarist and the rival.
         rivalFigure(s);
-    else
+        guitarist(s);
+    } else {
+        drummer(s);
+        bassist(s);
         singer(s);
-    guitarist(s);
+        guitarist(s);
+    }
     flushTris();
     beams(s, key, level);
     if (s.miss > 0) {
