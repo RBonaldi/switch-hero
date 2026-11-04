@@ -42,6 +42,7 @@ const std::vector<Venue> &venues() {
         {"Sunset Festival", "Open air, golden hour, fifteen thousand people singing along.", 15000},
         {"Metropolis Arena", "Your name in lights. Your face on the big screens.", 30000},
         {"Legends Stadium", "Sold out in four minutes. This is the one they will talk about.", 80000},
+        {"The Inferno", "Under the stadium, a door that was never on the map. It is very warm in there.", 666},
     };
     return v;
 }
@@ -220,6 +221,10 @@ void Career::load(const fs::path &path) {
         try {
             if (k == "band" && parts.size() > 1)
                 band = parts[1];
+            else if (k == "mode" && parts.size() > 1)
+                bandMode = parts[1] == "band";
+            else if (k == "bandstars" && parts.size() > 2)
+                bandStars[parts[1]] = std::clamp(std::stoi(parts[2]), 0, 6);
             else if (k == "difficulty" && parts.size() > 1)
                 difficulty = std::clamp(std::stoi(parts[1]), 0, 3);
             else if (k == "cash" && parts.size() > 1)
@@ -235,14 +240,14 @@ void Career::load(const fs::path &path) {
             else if (k == "beaten" && parts.size() > 1)
                 beaten.insert(std::stoi(parts[1]));
             else if (k == "duel" && parts.size() > 5 && !tiers.empty()) {
-                tiers.back().rival = std::clamp(std::stoi(parts[1]), 0, 2);
+                tiers.back().rival = std::clamp(std::stoi(parts[1]), 0, 3);
                 tiers.back().duel = {parts[2], parts[3], parts[4], std::stoi(parts[5])};
             }
             else if (k == "paid" && parts.size() > 2)
                 paid[parts[1]] = std::stoi(parts[2]);
             else if (k == "tier" && parts.size() > 1) {
                 Tier t;
-                t.venue = std::clamp(std::stoi(parts[1]), 0, 7);
+                t.venue = std::clamp(std::stoi(parts[1]), 0, infernoVenue);
                 tiers.push_back(t);
             } else if (k == "gig" && parts.size() > 4 && !tiers.empty()) {
                 Gig g;
@@ -269,6 +274,10 @@ void Career::save(const fs::path &path) const {
         if (!out)
             throw std::runtime_error("Cannot save the career: " + path.string());
         out << "switch-hero career 2\n";
+        if (bandMode)
+            out << "mode\tband\n";
+        for (const auto &[folder, stars] : bandStars)
+            out << "bandstars\t" << field(folder) << '\t' << stars << '\n';
         out << "band\t" << field(band) << "\ndifficulty\t" << difficulty << "\ncash\t" << cash << "\nguitar\t" << guitar
             << "\njacket\t" << jacket << "\npyro\t" << (pyro ? 1 : 0) << '\n';
         for (const auto &id : owned)
@@ -295,6 +304,10 @@ void Career::save(const fs::path &path) const {
 }
 
 int Career::stars(const Scores &scores, const Gig &gig) const {
+    if (bandMode) {
+        const auto it = bandStars.find(gig.folder);
+        return it == bandStars.end() ? 0 : std::max(1, it->second);
+    }
     const Record *r = scores.find(gig.folder, "Guitar", difficulty);
     return r ? std::max(1, r->stars) : 0;
 }
@@ -320,6 +333,8 @@ bool Career::tierOpen(const Scores &scores, size_t tier) const {
            (before.rival < 0 || beaten.count(before.rival));
 }
 bool Career::duelOpen(const Scores &scores, size_t tier) const {
+    if (tier < tiers.size() && tiers[tier].rival >= 0 && tiers[tier].songs.empty())
+        return tierOpen(scores, tier); // the Inferno: nothing to play first
     return tier < tiers.size() && tiers[tier].rival >= 0 && tierOpen(scores, tier) && !tiers[tier].songs.empty() &&
            cleared(scores, tiers[tier].songs.back());
 }
@@ -344,6 +359,25 @@ int Career::award(const Gig &gig, size_t tier, int earned) {
     already = earned;
     cash += cashIn;
     return cashIn;
+}
+void Career::recordBand(const Gig &gig, int earned) {
+    int &best = bandStars[gig.folder];
+    best = std::max(best, earned);
+}
+void addFinalBoss(std::vector<Tier> &tiers, const Gig &song) {
+    Tier t;
+    t.venue = infernoVenue;
+    t.rival = 3;
+    t.duel = song;
+    tiers.push_back(t);
+}
+int bandAverage(const std::vector<int> &stars) {
+    if (stars.empty())
+        return 0;
+    int sum = 0;
+    for (int s : stars)
+        sum += s;
+    return sum / int(stars.size());
 }
 bool Career::owns(const std::string &id) const {
     const Item *i = findItem(id);

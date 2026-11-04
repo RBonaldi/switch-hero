@@ -21,7 +21,10 @@ struct Venue {
     const char *blurb; // one line of story
     int capacity;      // shown on the venue card
 };
-const std::vector<Venue> &venues(); // always eight, in career order
+// Eight venues in career order, then the Inferno: the band career's last
+// stop, where only the final boss plays.
+const std::vector<Venue> &venues();
+constexpr int infernoVenue = 8;
 
 struct Gig { // one song of a setlist
     std::string folder, name, artist;
@@ -45,6 +48,10 @@ const Item *findItem(const std::string &id);
 
 struct Career {
     bool active = false;
+    // A band career (two to four players): stars come from the band's own
+    // record below instead of scores.cfg, and the Inferno waits at the end.
+    bool bandMode = false;
+    std::map<std::string, int> bandStars; // best band stars per song folder
     std::string band;
     int difficulty = 1; // 0 Easy .. 3 Expert
     std::vector<Tier> tiers;
@@ -67,6 +74,8 @@ struct Career {
     // The duel opens with the encore cleared; beating it opens the next venue.
     bool duelOpen(const Scores &scores, size_t tier) const;
     static int duelPrize(int rival) { return 1500 + 1500 * rival; }
+    // Keeps the band's best stars for a gig (band careers only).
+    void recordBand(const Gig &gig, int stars);
     int tierStars(const Scores &scores, size_t tier) const;
     int totalStars(const Scores &scores) const;
     // Pays for stars not paid before, at this venue's rate. Returns the cash earned.
@@ -91,6 +100,12 @@ int ratingOf(const fs::path &folder);
 // Gives the venues that host a duel (the club, the festival, the stadium)
 // their rival, fighting over the venue's encore. Old careers get them on load.
 void assignDuels(std::vector<Tier> &tiers);
+// The band career's final stop: the Inferno, where the final boss (duel.hpp's
+// last rival) plays `song`. Appended after the stadium.
+void addFinalBoss(std::vector<Tier> &tiers, const Gig &song);
+// The band's stars for a song: the average of everyone's, rounded down, so the
+// whole band has to play well for a good result.
+int bandAverage(const std::vector<int> &stars);
 // An original band name, picked by `seed`.
 std::string bandName(unsigned seed);
 } // namespace fret::career

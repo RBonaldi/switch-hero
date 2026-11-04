@@ -16,8 +16,13 @@ struct Rival {
     const char *name, *title, *taunt; // title and taunt in English; translated for display
     double skill;                       // chance to hit a note when calm
     unsigned color;                     // 0xRRGGBB, their lights on stage
+    bool bandOnly = false;              // fought by two to four players only
 };
-const std::vector<Rival> &rivals(); // three, weakest first
+// Three career rivals, weakest first, then Lived: the band career's final boss.
+const std::vector<Rival> &rivals();
+constexpr int finalBoss = 3;
+// An attack picked by `salt`, the same way a duel picks one.
+Attack pickAttack(uint64_t salt);
 
 struct Effect {
     Attack kind = Attack::None;

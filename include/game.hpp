@@ -432,6 +432,49 @@ struct MultiSession {
     size_t size() const { return players.size(); }
     Session &operator[](size_t i) { return players[i]; }
     const Session &operator[](size_t i) const { return players[i]; }
+    // Band rules (the band career and battles): a player whose own meter runs
+    // dry drops out, and their meter stays empty while they are out. With
+    // `rescue`, star power deployed by anyone still in brings everyone who is
+    // out back in. For a band that shares one meter, the average of
+    // everyone's: it fails when every player is out or when that average
+    // drops to bandFloor, so one strong player cannot carry the rest.
+    bool band = false, bandFailed = false;
+    std::vector<char> out, wasPower;
+    double savedAt = -1e9;
+    static constexpr double reviveMeter = .5, bandFloor = .1;
+    double bandMeter() const {
+        double sum = 0;
+        for (const auto &p : players)
+            sum += p.meter;
+        return players.empty() ? 0 : sum / double(players.size());
+    }
+    bool isOut(size_t i) const { return i < out.size() && out[i]; }
+    size_t standing() const {
+        size_t n = 0;
+        for (size_t i = 0; i < players.size(); ++i)
+            n += !isOut(i);
+        return n;
+    }
+    void outRules(double time, bool rescue) {
+        out.resize(players.size(), 0), wasPower.resize(players.size(), 0);
+        bool saving = false;
+        for (size_t i = 0; i < players.size(); ++i) {
+            if (rescue && !out[i] && players[i].powerActive && !wasPower[i])
+                saving = true;
+            wasPower[i] = players[i].powerActive;
+        }
+        for (size_t i = 0; i < players.size(); ++i)
+            if (!out[i] && players[i].meter <= 0)
+                out[i] = 1;
+        for (size_t i = 0; i < players.size(); ++i) {
+            if (out[i] && saving)
+                out[i] = 0, players[i].meter = reviveMeter, savedAt = time;
+            if (out[i])
+                players[i].meter = 0;
+        }
+        if (band && (standing() == 0 || bandMeter() <= bandFloor))
+            bandFailed = true;
+    }
     // The song is over for everyone at once: it is one shared audio stream.
     bool complete(double time) const {
         return !players.empty() && players.front().complete(time);

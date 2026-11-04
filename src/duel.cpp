@@ -24,8 +24,20 @@ const std::vector<Rival> &rivals() {
          .80, 0xd2283c},
         {"Viktor Kade", "the shred king in the leopard jacket", "Six strings? Cute. I brought two necks.", .86, 0xffb428},
         {"MK-77", "the machine that never misses a beat", "PROBABILITY OF YOUR VICTORY: 0.3 PERCENT.", .91, 0x3cdcff},
+        // An eighties album-cover devil, played for laughs: his name is the word backwards.
+        {"Lived", "the devil of eighties metal, spelled backwards", "Shout all you want, mortals. Nobody leaves my show.",
+         .93, 0xff3a14, true},
     };
     return r;
+}
+
+Attack pickAttack(uint64_t salt) {
+    uint64_t x = salt + 0x9E3779B97F4A7C15ull;
+    x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ull;
+    x = (x ^ (x >> 27)) * 0x94D049BB133111EBull;
+    x ^= x >> 31;
+    static const Attack all[4] = {Attack::Lefty, Attack::Speed, Attack::Blackout, Attack::String};
+    return all[x % 4];
 }
 
 Duel::Duel(const Track &t, int r, uint32_t s)

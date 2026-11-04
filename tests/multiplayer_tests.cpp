@@ -122,6 +122,45 @@ int main() {
             check(s.size() == 2 && s[1].player == 1 && s[1].score == 0, "a silent player still places");
             near(s[1].accuracy, 0, "and scores zero accuracy");
         }
+        {
+            // Band rules: an empty meter drops a player out, and a bandmate's
+            // star power brings them back in.
+            std::vector<const Track *> tracks(3, &song.tracks[0]);
+            MultiSession m(song, tracks, 1);
+            m.band = true;
+            m[0].meter = .8, m[1].meter = .8, m[2].meter = 0;
+            m.outRules(1, true);
+            check(m.isOut(2) && m.standing() == 2 && !m.bandFailed, "an empty meter drops one player out");
+            m[2].meter = .4;
+            m.outRules(1.1, true);
+            check(m.isOut(2) && m[2].meter == 0, "a player who is out stays empty");
+            m[0].power = .5, m[0].activate();
+            m.outRules(1.2, true);
+            check(!m.isOut(2) && m[2].meter == MultiSession::reviveMeter && m.savedAt == 1.2,
+                  "a bandmate's star power saves them");
+            // The band meter is everyone's average: one strong player cannot carry the rest.
+            m[0].meter = .25, m[1].meter = 0, m[2].meter = 0;
+            m.outRules(2, true);
+            check(m.bandFailed, "the band fails when its average meter runs dry");
+            MultiSession all(song, tracks, 1);
+            all.band = true;
+            for (size_t p = 0; p < 3; ++p)
+                all[p].meter = 0;
+            all.outRules(1, true);
+            check(all.bandFailed && all.standing() == 0, "the band fails when everyone is out");
+            near(all.bandMeter(), 0, "an empty band meter");
+        }
+        {
+            // A battle knocks players out for good and never fails a band.
+            std::vector<const Track *> tracks(2, &song.tracks[0]);
+            MultiSession m(song, tracks, 1);
+            m[1].meter = 0;
+            m[0].power = .5, m[0].activate();
+            m.outRules(1, false);
+            check(m.isOut(1) && m.standing() == 1 && !m.bandFailed, "a battle knocks out an empty meter");
+            m.outRules(2, false);
+            check(m.isOut(1), "and star power does not bring them back");
+        }
         std::cout << checks << " multiplayer checks passed\n";
         return 0;
     } catch (const std::exception &e) {

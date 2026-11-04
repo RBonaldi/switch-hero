@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
+#include <string>
 
 using namespace fret;
 using namespace fret::career;
@@ -114,6 +115,38 @@ int main() {
     Career none;
     none.load(root / "missing.cfg");
     check(!none.active, "no file, no career");
+
+    // The band career: its own star record, and the Inferno after the stadium.
+    {
+        Career band;
+        band.active = true, band.bandMode = true, band.band = "Band", band.difficulty = 3, band.tiers = tiers;
+        Gig boss{"devil", "Shout at the Devil", "Motley Crue", -1};
+        addFinalBoss(band.tiers, boss);
+        const size_t inferno = band.tiers.size() - 1;
+        check(band.tiers[inferno].venue == infernoVenue && band.tiers[inferno].rival == 3 && band.tiers[inferno].songs.empty(),
+              "the Inferno hosts only the final boss");
+        check(venues().size() == 9 && std::string(venues()[infernoVenue].name) == "The Inferno", "nine venues, the last one hot");
+        check(band.stars(scores, tiers[0].songs[0]) == 0, "a band career ignores solo scores");
+        band.recordBand(tiers[0].songs[0], 4);
+        band.recordBand(tiers[0].songs[0], 2);
+        check(band.stars(scores, tiers[0].songs[0]) == 4, "the band keeps its best stars");
+        for (const auto &t : tiers)
+            for (const auto &g : t.songs)
+                band.recordBand(g, 3);
+        band.beaten = {0, 1};
+        check(!band.tierOpen(scores, inferno) && !band.duelOpen(scores, inferno), "the Inferno waits for the stadium's rival");
+        band.beaten.insert(2);
+        check(band.tierOpen(scores, inferno) && band.duelOpen(scores, inferno), "beating MK-77 opens the Inferno");
+        band.save(root / "band.cfg");
+        Career back;
+        back.load(root / "band.cfg");
+        check(back.bandMode && back.stars(scores, tiers[0].songs[0]) == 4, "save keeps the band record");
+        check(back.tiers.size() == band.tiers.size() && back.tiers.back().rival == 3 &&
+                  back.tiers.back().duel.folder == "devil" && back.tiers.back().venue == infernoVenue,
+              "save keeps the Inferno");
+        check(bandAverage({5, 3}) == 4 && bandAverage({5, 4, 4, 2}) == 3 && bandAverage({}) == 0,
+              "band stars are everyone's average, rounded down");
+    }
 
     fs::remove_all(root);
     if (failures)

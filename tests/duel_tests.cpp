@@ -3,6 +3,7 @@
 #include "duel.hpp"
 #include <cstdlib>
 #include <iostream>
+#include <string>
 
 using namespace fret;
 using namespace fret::duel;
@@ -52,8 +53,17 @@ double beatenAt(const Track &t, int rival, uint32_t seed) {
 
 int main() {
     const Track t = chart();
-    check(rivals().size() == 3, "three rivals");
+    check(rivals().size() == 4, "three rivals and the final boss");
     check(rivals()[0].skill < rivals()[1].skill && rivals()[1].skill < rivals()[2].skill, "rivals get harder");
+    check(rivals()[finalBoss].bandOnly && !rivals()[0].bandOnly && rivals()[finalBoss].skill > rivals()[2].skill,
+          "Lived is the hardest and fights bands only");
+    check(std::string(rivals()[finalBoss].name) == "Lived", "the final boss is Lived");
+    {
+        bool seen[5] = {};
+        for (uint64_t salt = 0; salt < 64; ++salt)
+            seen[int(pickAttack(salt))] = true;
+        check(!seen[0] && seen[1] && seen[2] && seen[3] && seen[4], "battles pick every attack");
+    }
 
     {
         Duel calm(t, 0, 1);

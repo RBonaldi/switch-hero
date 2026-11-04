@@ -16,10 +16,16 @@ Clone Hero's proprietary source.
 | ![New career](docs/career-new.jpg) | ![Career](docs/career.jpg) |
 | **The shop** | **A rival duel** |
 | ![Shop](docs/shop.jpg) | ![Duel](docs/duel.jpg) |
-| **Duel won** | |
-| ![Duel won](docs/duel-won.jpg) | |
+| **Duel won** | **Band career: the Inferno** |
+| ![Duel won](docs/duel-won.jpg) | ![The Inferno](docs/band-career.jpg) |
+| **Lived, the final boss** | **Lived beaten** |
+| ![Lived](docs/lived.jpg) | ![Lived beaten](docs/lived-beaten.jpg) |
+| **Out: a bandmate's star power saves you** | **Band result: everyone's average** |
+| ![Out](docs/band-out.jpg) | ![Band result](docs/band-result.jpg) |
+| **Battle menu** | **Player vs player** |
+| ![Battle](docs/battle.jpg) | ![Battle attack](docs/battle-attack.jpg) |
 
-## Stage, career and rival duels (this fork)
+## Stage, career, band career and battles (this fork)
 
 This fork adds a live 3D stage behind the highway, a career mode and rival
 duels. Every character, venue and rival is original to this game; none of them
@@ -50,9 +56,28 @@ lefty flip, overdrive, blackout and a broken string you mash to mend. Run the
 rival's meter dry, or finish the song ahead, to win a prize and the next venue.
 The winner celebrates on stage; the loser hangs their head.
 
+**Band career (2 to 4 players).** The same road, played by a band on one docked
+console: each player picks a part (guitar, bass, rhythm, keys) and difficulty in
+the lobby. The band shares one meter, the average of everyone's. A player whose
+own meter runs dry drops out and their board goes dark until a bandmate deploys
+star power; the band is booed off when its average runs dry. The band earns the
+average of everyone's stars, rounded down, so nobody gets carried. The club,
+festival and stadium rivals face the whole band (everyone throws attacks; the
+rival hits one board at a time), and after the stadium comes a ninth venue, the
+Inferno, home of the final boss: **Lived**, a cartoon eighties album-cover devil
+whose name is the word spelled backwards. He plays *Shout at the Devil* when
+your library has it (the Neversoft chart on Chorus Encore covers all four
+difficulties plus bass and drums), and otherwise the heaviest chart you have.
+The band career is saved apart from the solo one, in `band.cfg`.
+
+**Battle menu.** Rematch any rival a career has reached, alone or as a band
+(Lived is band-only), or play player vs player on any song: star phrases arm
+attacks, star power throws one at the leader, an empty meter knocks you out,
+and the last one standing wins. Battles pay nothing and unlock nothing.
+
 **Status of these additions:** built and played on the desktop build, with
-automated tests for the career and duel rules (`tests/career_tests.cpp`,
-`tests/duel_tests.cpp`), and cross-compiled for the Switch. Frame pacing of the
+automated tests for the career, duel and band rules (`tests/career_tests.cpp`,
+`tests/duel_tests.cpp`, `tests/multiplayer_tests.cpp`), and cross-compiled for the Switch. Frame pacing of the
 3D stage on a console still needs checking with the timing overlay.
 
 What changed in this release is in [CHANGELOG.md](CHANGELOG.md).

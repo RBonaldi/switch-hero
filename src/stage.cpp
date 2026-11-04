@@ -260,16 +260,16 @@ struct Show { // what everyone reacts to this frame
     uint8_t held;
 };
 
-// How each venue dresses the stage. Index 8 is the Quickplay club.
+// How each venue dresses the stage. Index 8 is the Inferno, 9 the Quickplay club.
 struct VenueLook {
     SDL_Color keyA, keyB, fillA, fillB; // light palettes the show drifts between
     int led;        // 0 none, 1 small screen, 2 full wall, 3 full wall and side screens
     int lamps;      // lamps on the truss (0: bare bulbs hanging from the ceiling)
-    int backdrop;   // 0 brick, 1 black wall, 2 open sky at sunset
+    int backdrop;   // 0 brick, 1 black wall, 2 open sky at sunset, 3 a cavern of lava
     float crowd;    // how full the pit is, 0..1
     float level;    // overall brightness
 };
-const VenueLook venueLooks[9] = {
+const VenueLook venueLooks[10] = {
     {{255, 190, 110, 255}, {255, 150, 80, 255}, {90, 70, 50, 255}, {70, 60, 60, 255}, 0, 0, 0, .25f, .8f},     // garage
     {{255, 170, 70, 255}, {60, 200, 190, 255}, {120, 70, 30, 255}, {30, 100, 100, 255}, 1, 3, 0, .45f, .9f}, // tavern
     {{140, 230, 80, 255}, {250, 220, 60, 255}, {40, 90, 40, 255}, {90, 80, 30, 255}, 1, 4, 1, .6f, 1},        // campus
@@ -278,13 +278,15 @@ const VenueLook venueLooks[9] = {
     {{255, 160, 80, 255}, {200, 90, 220, 255}, {150, 80, 60, 255}, {90, 50, 130, 255}, 2, 5, 2, 1, 1},       // sunset festival
     {{110, 180, 255, 255}, {240, 240, 255, 255}, {40, 70, 160, 255}, {90, 90, 130, 255}, 3, 7, 1, 1, 1.05f}, // arena
     {{255, 200, 90, 255}, {255, 255, 235, 255}, {140, 100, 40, 255}, {120, 120, 110, 255}, 3, 9, 2, 1, 1.1f}, // stadium
+    {{255, 60, 20, 255}, {255, 150, 30, 255}, {190, 20, 10, 255}, {160, 50, 10, 255}, 2, 6, 3, 1, 1.15f},      // the Inferno
     {{255, 176, 90, 255}, {245, 80, 180, 255}, {80, 120, 255, 255}, {60, 200, 190, 255}, 2, 5, 1, .8f, 1},    // quickplay club
 };
-const VenueLook *vl = &venueLooks[8];
+const VenueLook *vl = &venueLooks[9];
 V3 hexColor(unsigned c) { return {((c >> 16) & 255) / 255.f, ((c >> 8) & 255) / 255.f, (c & 255) / 255.f}; }
 V3 guitarFinish{.12f, .62f, .6f}, jacketColour{.1f, .1f, .11f};
 bool pyroOn = false;
 int rivalOn = -1;
+V3 rivalSpot{-2.05f, 0, .5f};
 int outcome = 0; // after a duel: 1 the player won, -1 the rival won
 V3 rivalColour{1, 1, 1};
 float rivalHurt = 0, rivalStrike = 0;
@@ -539,7 +541,9 @@ void rivalFigure(const Show &in) {
     if (outcome < 0)
         s.failed = false, s.energy = 1;
     const float cheer = outcome < 0 ? std::sin(Pi * frac(s.beat / 2)) * .3f * (frac(s.beat / 2) < .5f ? 1.f : 0.f) : 0;
-    const V3 root = {-2.05f, cheer, .5f}; // a step closer than the singer: this is their show too
+    // A step closer than the singer: this is their show too. Against a whole
+    // band they come further downstage, clear of the bassist behind them.
+    const V3 root = rivalSpot + V3{0, cheer, 0};
     const float bang = s.failed ? 0 : bangOf(s, .35f);
     const float lean = .06f + (rivalOn == 1 ? bangOf(s, .15f) : 0) - .25f * rivalHurt;
     Rig k = rig(root, .32f, lean, rivalOn == 0 ? .05f * std::sin(float(s.beat) * Pi * .5f) : 0,
@@ -573,7 +577,7 @@ void rivalFigure(const Show &in) {
         }
         head(k, st, s.failed ? 0 : (1 - s.ph) * .9f);
         neck = .6f;
-    } else { // MK-77: chrome boxes, a visor and an antenna
+    } else if (rivalOn == 2) { // MK-77: chrome boxes, a visor and an antenna
         st = {{.7f, .72f, .78f}, {.55f, .58f, .64f}, {.4f, .42f, .48f}, {.3f, .32f, .36f}, {.2f, .2f, .22f},
               {.2f, .2f, .22f}, 0, true};
         legs(k, st);
@@ -589,6 +593,57 @@ void rivalFigure(const Show &in) {
         cylinder(k.head.at(k.headC, .06f, .11f, 0), k.head.at(k.headC, .08f, .28f, 0), .008f, .006f, st.jacket, 4, false);
         sphere(k.head.at(k.headC, .08f, .29f, 0), .02f, rivalColour, 6, 4);
         neck = .7f;
+    } else { // Lived: an eighties album-cover devil, played for laughs
+        const V3 red = {.8f, .1f, .08f}, black = {.05f, .04f, .05f}, ivory = {.93f, .88f, .74f};
+        st = {red, red * .9f, black, black, {.12f, .05f, .05f}, black, 0, true};
+        // The cape first, hanging behind him and swinging with the beat.
+        const float swing = .06f * std::sin(float(s.beat) * Pi * .5f);
+        frustum(k.pelvis + k.body.u * -.75f - k.body.f * .2f + k.body.r * swing, k.pelvis + k.body.u * .5f - k.body.f * .12f,
+                k.body.f, .42f, .02f, .24f, .02f, {.35f, .02f, .04f});
+        legs(k, st);
+        trunk(k, st);
+        // Studded shoulder pads, very much of their decade.
+        for (int side : {-1, 1}) {
+            const V3 pad = (side < 0 ? k.shoulderL : k.shoulderR) + k.body.u * .04f;
+            ellipsoid(pad, k.body, .09f, .05f, .09f, black, 8, 4);
+            for (int i = 0; i < 3; ++i)
+                cylinder(pad + k.body.r * (side * (.02f + i * .03f)) + k.body.u * .03f,
+                         pad + k.body.r * (side * (.04f + i * .03f)) + k.body.u * .12f, .018f, .002f, {.75f, .75f, .8f}, 4, false);
+        }
+        // The tail: it curls up behind him and ends in an arrowhead.
+        V3 at = k.pelvis - k.body.f * .1f - k.body.u * .05f;
+        for (int i = 0; i < 6; ++i) {
+            const float a = float(i) / 5;
+            const V3 next = at + k.body.f * -.09f + k.body.u * (-.06f + .13f * a) +
+                            k.body.r * (.07f * std::sin(float(s.beat) * Pi + a * 3));
+            cylinder(at, next, .028f - .015f * a, .028f - .015f * (a + .2f), red, 5, false);
+            at = next;
+        }
+        frustum(at + k.body.u * .1f, at, k.body.r, .002f, .01f, .07f, .01f, red);
+        const Frame &h = k.head;
+        const V3 c = k.headC;
+        ellipsoid(c, h, .115f, .14f, .12f, red); // a head a size too big: he is a cartoon
+        ellipsoid(h.at(c, 0, .08f, -.05f), h, .14f, .1f, .12f, black, 10, 4); // teased black hair
+        for (int side : {-1, 1}) {
+            // Horns, curling up and out.
+            const V3 base = h.at(c, side * .07f, .11f, .03f);
+            const V3 mid = base + h.dir(side * .12f, .08f, 0), tip = mid + h.dir(side * .02f, .16f, .05f);
+            cylinder(base, mid, .042f, .028f, ivory, 7, false);
+            cylinder(mid, tip, .028f, .002f, ivory, 7, false);
+            // Pointed ears.
+            frustum(h.at(c, side * .1f, 0, 0), h.at(c, side * .16f, .06f, -.02f), h.f, .02f, .01f, .002f, .002f, red);
+            // Wicked eyebrows.
+            box(h.at(c, side * .042f, .045f, .1f), frameFrom(h.u + h.r * (side * .55f), h.f), .012f, .035f, .01f, black);
+        }
+        emissive = true; // glowing eyes and a grin full of teeth
+        for (int side : {-1, 1})
+            box(h.at(c, side * .04f, .015f, .105f), h, .022f, .011f, .004f,
+                V3{1.f, .85f, .1f} * (.8f + .2f * std::pow(1 - s.ph, 2.0f)));
+        emissive = false;
+        box(h.at(c, 0, -.055f, .1f), h, .05f, .012f, .01f, {.95f, .95f, .92f});
+        // A pointed goatee.
+        frustum(h.at(c, 0, -.25f, .1f), h.at(c, 0, -.11f, .08f), h.f, .003f, .003f, .035f, .03f, black);
+        neck = .6f;
     }
     // The guitar: a resonator, a double neck, or a V.
     const Axe g = strap(k, s.failed ? -.1f : neck + .08f * std::sin(float(s.beat) * Pi * .5f));
@@ -605,6 +660,15 @@ void rivalFigure(const Show &in) {
         }
         slab(fr.at(g.bodyC, -.04f, 0, 0), fr, [](float a) { return .2f * (1 + .25f * std::pow(std::max(0.0f, std::cos(a - 1.3f)), 6.0f)); },
              28, .05f, {.92f, .92f, .9f}, {.6f, .6f, .58f});
+    } else if (rivalOn == 3) {
+        // A guitar with a spiky body and a pitchfork for a headstock.
+        slab(fr.at(g.bodyC, -.04f, 0, 0), fr, [](float a) { return .17f * (1 + .35f * std::pow(std::abs(std::cos(a * 2.5f)), 4.0f)); },
+             30, .05f, {.12f, .02f, .02f}, {.7f, .1f, .06f});
+        box(fr.at(g.bodyC, .12f + .24f, 0, .01f), fr, .24f, .024f, .016f, {.08f, .06f, .06f});
+        const V3 steel = {.8f, .8f, .84f};
+        box(fr.at(g.bodyC, .62f, 0, .01f), fr, .015f, .09f, .015f, steel);
+        for (float off : {-.08f, 0.f, .08f})
+            frustum(fr.at(g.bodyC, .63f, off, .01f), fr.at(g.bodyC, .76f, off, .01f), g.face, .012f, .012f, .002f, .002f, steel);
     } else {
         // Two long wings swept back from the neck: a V.
         for (int side : {-1, 1})
@@ -720,6 +784,24 @@ void stageSet(const Show &s, SDL_Color key) {
                          {x0 + .03f, y0 + .47f, -6}, {0, 0, 1}, V3{.32f, .13f, .1f} * k);
             }
         flatQuad({-12, 0, -6.01f}, {12, 0, -6.01f}, {12, 8, -6.01f}, {-12, 8, -6.01f}, {0, 0, 1}, {.08f, .06f, .05f});
+    } else if (vl->backdrop == 3) {
+        // The Inferno: black rock split by glowing cracks of lava that breathe with the beat.
+        flatQuad({-12, 0, -6.01f}, {12, 0, -6.01f}, {12, 8, -6.01f}, {-12, 8, -6.01f}, {0, 0, 1}, {.07f, .03f, .03f});
+        emissive = true;
+        const float breathe = .55f + .45f * std::pow(1 - s.ph, 2.0f);
+        for (int c = 0; c < 14; ++c) {
+            float x = -11.5f + c * 1.75f + hash01(uint32_t(c * 13)) * 1.0f, y = 0;
+            while (y < 8) {
+                const float nx = x + (hash01(uint32_t(c * 97 + int(y * 10))) - .5f) * 1.1f, ny = y + .5f + hash01(uint32_t(c * 31 + int(y * 7))) * .6f;
+                const float w = .06f + .05f * hash01(uint32_t(c * 5 + int(y)));
+                const V3 lava = V3{1.f, .35f + .3f * hash01(uint32_t(c + int(y * 3))), .05f} * breathe;
+                flatQuad({x - w, y, -5.99f}, {x + w, y, -5.99f}, {nx + w, ny, -5.99f}, {nx - w, ny, -5.99f}, {0, 0, 1}, lava);
+                x = nx, y = ny;
+            }
+        }
+        // A pool of glow along the foot of the wall.
+        flatQuad({-12, 0, -5.98f}, {12, 0, -5.98f}, {12, .35f, -5.98f}, {-12, .35f, -5.98f}, {0, 0, 1}, V3{.9f, .25f, .05f} * breathe);
+        emissive = false;
     } else
         flatQuad({-12, 0, -6}, {12, 0, -6}, {12, 8, -6}, {-12, 8, -6}, {0, 0, 1}, {.04f, .04f, .05f});
     emissive = true;
@@ -827,9 +909,11 @@ void sparks(const Show &s) {
 }
 
 void fireColumns(const Show &s) {
-    if (!pyroOn || !s.power)
+    // The Inferno burns all the time; anywhere else the columns are bought, and fire in star power.
+    const bool inferno = vl->backdrop == 3;
+    if (!inferno && (!pyroOn || !s.power))
         return;
-    const float burst = .35f + .65f * std::pow(1 - s.ph, 1.5f);
+    const float burst = (inferno && !s.power ? .45f : 1.f) * (.35f + .65f * std::pow(1 - s.ph, 1.5f));
     // Flanking the drum riser and behind the front line, where the highway leaves them in view.
     for (V3 at : {V3{-2.1f, .5f, -4.3f}, V3{2.1f, .5f, -4.3f}, V3{-3.6f, 0, -1.8f}, V3{3.5f, 0, -1.8f}}) {
         const float x = at.x;
@@ -930,8 +1014,9 @@ void draw(const Cues &input) {
         if (const char *v = std::getenv("SWITCH_HERO_VENUE"))
             c.venue = std::atoi(v);
         if (const char *r = std::getenv("SWITCH_HERO_RIVAL")) {
-            static const unsigned colors[3] = {0xd2283c, 0xffb428, 0x3cdcff};
-            c.rival = std::atoi(r) % 3, c.rivalColor = colors[c.rival];
+            static const unsigned colors[4] = {0xd2283c, 0xffb428, 0x3cdcff, 0xff3a14};
+            c.rival = std::atoi(r) % 4, c.rivalColor = colors[c.rival];
+            c.bandDuel = std::getenv("SWITCH_HERO_BAND_DUEL") != nullptr;
         }
         if (const char *o = std::getenv("SWITCH_HERO_OUTCOME"))
             c.outcome = std::atoi(o);
@@ -959,9 +1044,9 @@ void draw(const Cues &input) {
         s.energy = 0;
     s.hit = ease(c.time - mem.lastHit, .14), s.miss = ease(c.time - mem.lastMiss, .5);
 
-    vl = &venueLooks[c.venue >= 0 && c.venue < 8 ? c.venue : 8];
+    vl = &venueLooks[c.venue >= 0 && c.venue < 9 ? c.venue : 9];
     guitarFinish = hexColor(c.guitarColor), jacketColour = hexColor(c.jacketColor), pyroOn = c.pyro;
-    rivalOn = c.rival >= 0 && c.rival <= 2 ? c.rival : -1;
+    rivalOn = c.rival >= 0 && c.rival <= 3 ? c.rival : -1;
     rivalColour = hexColor(c.rivalColor);
     rivalHurt = ease(c.time - c.rivalHurtAt, .6), rivalStrike = ease(c.time - c.rivalStrikeAt, .8);
     outcome = rivalOn >= 0 ? c.outcome : 0;
@@ -990,7 +1075,10 @@ void draw(const Cues &input) {
     stageSet(s, key);
     flushTris();
     // Light pools and shadows on the floor, under everyone.
-    const std::vector<V3> standing = rivalOn >= 0 ? std::vector<V3>{{-2.05f, 0, .5f}, {2.3f, 0, -.1f}}
+    const bool wholeBand = rivalOn < 0 || c.bandDuel;
+    rivalSpot = c.bandDuel ? V3{-1.35f, 0, .85f} : V3{-2.05f, 0, .5f};
+    const std::vector<V3> standing = !wholeBand ? std::vector<V3>{{-2.05f, 0, .5f}, {2.3f, 0, -.1f}}
+                                   : rivalOn >= 0 ? std::vector<V3>{rivalSpot, {2.3f, 0, -.1f}, {-3.9f, 0, -2.7f}}
                                                   : std::vector<V3>{{-2.35f, 0, .15f}, {2.3f, 0, -.1f}, {-3.9f, 0, -2.7f}};
     for (V3 p : standing) {
         const V3 v = cam.view(p);
@@ -1000,8 +1088,14 @@ void draw(const Cues &input) {
         }
         shadow(p, .45f, .3f);
     }
-    if (rivalOn >= 0) {
+    if (rivalOn >= 0 && !c.bandDuel) {
         // A duel is one on one: the band clears the stage for the guitarist and the rival.
+        rivalFigure(s);
+        guitarist(s);
+    } else if (rivalOn >= 0) {
+        // The band against the rival: the rival takes the singer's spot.
+        drummer(s);
+        bassist(s);
         rivalFigure(s);
         guitarist(s);
     } else {
@@ -1021,7 +1115,7 @@ void draw(const Cues &input) {
     }
     if (rivalOn >= 0) {
         // The rival's own light on their side, and a flash of it when they strike.
-        const V3 v = cam.view({-2.05f, 1.2f, .5f});
+        const V3 v = cam.view(rivalSpot + V3{0, 1.2f, 0});
         if (v.z > .3f) {
             const SDL_FPoint q = cam.screen(v);
             const SDL_Color rc = rgb(int(rivalColour.x * 255), int(rivalColour.y * 255), int(rivalColour.z * 255));
