@@ -26,7 +26,13 @@ const std::vector<Rival> &rivals() {
         {"MK-77", "the machine that never misses a beat", "PROBABILITY OF YOUR VICTORY: 0.3 PERCENT.", .91, 0x3cdcff},
         // An eighties album-cover devil, played for laughs: his name is the word backwards.
         {"Lived", "the devil of eighties metal, spelled backwards", "Shout all you want, mortals. Nobody leaves my show.",
-         .93, 0xff3a14, true},
+         .93, 0xff3a14},
+        // The bosses past the stadium, one per step of difficulty.
+        {"Capitã Maré", "the pirate queen of the harbour", "Every crew I ever played against is still at the bottom of the bay.",
+         .915, 0x1ec8aa},
+        {"Grizzlo", "the yeti who headlines the glacier", "GRRRAAAH! (He means: your solos are lukewarm.)", .92, 0x9adcff},
+        {"Zorg Nebula", "the three-eyed shredder from another galaxy", "On my planet, this tempo is a lullaby, Earthling.",
+         .925, 0x8cff3c},
     };
     return r;
 }

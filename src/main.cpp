@@ -2041,14 +2041,16 @@ int main(int argc, char **argv) {
         // song for the Inferno instead of a venue.
         auto buildTiers = [&](int difficulty) {
             std::vector<std::pair<fs::path, std::pair<std::string, std::string>>> pool;
+            // Band careers and Expert careers end in the Inferno, against Lived.
+            const bool inferno = bandCareer || difficulty == 3;
             career::Gig boss;
-            if (bandCareer)
+            if (inferno)
                 boss = bossSong({});
             for (const auto &e : entries)
                 if (e.error.empty() && (boss.folder.empty() || e.folder.filename().string() != boss.folder))
                     pool.push_back({e.folder, {e.name, e.artist}});
             auto tiers = career::buildSetlists(pool, difficulty);
-            if (bandCareer && !tiers.empty()) {
+            if (inferno && !tiers.empty()) {
                 if (boss.folder.empty())
                     boss = bossSong(tiers);
                 career::addFinalBoss(tiers, boss);
@@ -2081,6 +2083,11 @@ int main(int argc, char **argv) {
             battleRow = std::min<size_t>(battleRow, duel::rivals().size());
             screen = Screen::Battle;
         };
+        // The Battle menu lists rivals in the order a career meets them, Lived last.
+        auto battleRival = [&](size_t row) {
+            static const int order[7] = {0, 1, 2, 4, 5, 6, duel::finalBoss};
+            return row < 7 ? order[row] : -1;
+        };
         auto battleOpen = [&](int r) {
             const bool band = duel::rivals()[size_t(r)].bandOnly;
             return rivalReached(bandSave, r) || (!band && rivalReached(soloSave, r));
@@ -2094,7 +2101,7 @@ int main(int argc, char **argv) {
             duelOutcome = 0;
 #ifndef __SWITCH__
             if (const char *d = std::getenv("SWITCH_HERO_DUEL"))
-                duelRun = true, duelRival = std::atoi(d) % 3, session->noFail = true;
+                duelRun = true, duelRival = std::atoi(d) % 7, session->noFail = true;
 #endif
             if (duelRun)
                 duelState = std::make_unique<duel::Duel>(*session->track, duelRival, uint32_t(SDL_GetTicks()));
@@ -2619,7 +2626,10 @@ int main(int argc, char **argv) {
                                     career.tiers = std::move(tiers);
                                     career.stale = false;
                                     saveCareer();
-                                    careerNews = tr("Setlists rebuilt: easiest charts first, harder every venue");
+                                    careerNews = career.staleFrom == 2
+                                                     ? tr("New venues and bosses for your difficulty: the road goes on past the stadium")
+                                                     : tr("Setlists rebuilt: easiest charts first, harder every venue");
+                                    career.staleFrom = 0;
                                     careerCash.clear(), careerNewsAt = now();
                                 }
                             }
@@ -2791,7 +2801,7 @@ int main(int argc, char **argv) {
                     battleRow = (battleRow + rows + (down ? 1 : size_t(-1))) % rows;
                     audio.playSfx(Sfx::Move);
                 }
-                if ((left || right) && battleRow < duel::rivals().size() && !duel::rivals()[battleRow].bandOnly) {
+                if ((left || right) && battleRow < duel::rivals().size() && !duel::rivals()[size_t(battleRival(battleRow))].bandOnly) {
                     battleBand = 1 - battleBand;
                     audio.playSfx(Sfx::Toggle);
                 }
@@ -2801,8 +2811,8 @@ int main(int argc, char **argv) {
                     screen = Screen::Main;
                 } else if (accept) {
                     const bool pvp = battleRow == duel::rivals().size();
-                    const int r = pvp ? -1 : int(battleRow);
-                    const bool together = pvp || battleBand == 1 || duel::rivals()[battleRow].bandOnly;
+                    const int r = pvp ? -1 : battleRival(battleRow);
+                    const bool together = pvp || battleBand == 1 || duel::rivals()[size_t(r)].bandOnly;
                     careerRun = false, practiceMode = false;
                     if (together && !platform::docked()) {
                         audio.playSfx(Sfx::Back);
@@ -3797,10 +3807,14 @@ int main(int argc, char **argv) {
                                               {int(session->score), starsFor(accuracy, false), int(accuracy * 100),
                                                session->misses == 0});
                             const auto &tier = career.tiers[careerTier];
-                            const int earned = career.award(tier.songs[std::min(careerSong, tier.songs.size() - 1)],
+                            // The Inferno has no setlist to pay for: only its duel.
+                            const int earned = tier.songs.empty() ? 0
+                                             : career.award(tier.songs[std::min(careerSong, tier.songs.size() - 1)],
                                                             careerTier, starsFor(accuracy, false));
                             careerCash = earned ? tr("+${} cash", grouped(earned)) : std::string();
-                            if (!careerHadNext && career.tierOpen(scores, careerTier + 1)) {
+                            if (tier.songs.empty()) {
+                                careerNews.clear();
+                            } else if (!careerHadNext && career.tierOpen(scores, careerTier + 1)) {
                                 const auto &v = career::venues()[size_t(career.tiers[careerTier + 1].venue)];
                                 careerNews = tr("NEW VENUE: {}", tr(v.name));
                             } else if (!careerHadEncore && career.encoreOpen(scores, careerTier))
@@ -3821,7 +3835,9 @@ int main(int argc, char **argv) {
                                     career.cash += prize;
                                     careerCash = tr("+${} prize", grouped(prize));
                                 }
-                                if (won && careerTier + 1 < career.tiers.size())
+                                if (won && duelRival == duel::finalBoss)
+                                    careerNews = tr("{} sent {} back downstairs. Legends forever!", career.band, rv.name);
+                                else if (won && careerTier + 1 < career.tiers.size())
                                     careerNews = tr("You beat {}! NEW VENUE: {}", rv.name,
                                                     tr(career::venues()[size_t(career.tiers[careerTier + 1].venue)].name));
                                 else if (won)
@@ -4191,6 +4207,10 @@ int main(int argc, char **argv) {
                     text(60, 664, message, marker(22, messageInk(), -1));
                 hints({{glyphAccept, tr("SELECT")}, {glyphBack, tr("QUIT")}});
                 {
+                    // The author's signature, scrawled in the corner of the mixtape.
+                    auto sign = marker(34, {246, 240, 222, 255}, -4);
+                    sign.align = Align::Right, sign.glow = alpha(ink::blood, .7f), sign.glowSpread = 1.2f;
+                    text(1236, 624, "Rafael Bonaldi", sign);
                     auto version = body(15, ink::faint);
                     version.align = Align::Right;
                     text(1236, 684, "v" SWITCH_HERO_VERSION, version);
@@ -4390,14 +4410,23 @@ int main(int argc, char **argv) {
                     auto b = body(18, ink::dim);
                     b.align = Align::Center;
                     text(330, 600, tr(why[careerSetup]), b);
+                    // What each step of difficulty adds past the stadium.
+                    static const char *const road[4] = {"8 venues and 3 rivals",
+                                                        "+ the Harbour Barge and its boss, Capitã Maré",
+                                                        "+ the Glacier Festival and its boss, Grizzlo",
+                                                        "+ the Orbital Arena, Zorg Nebula, and Lived in the Inferno"};
+                    auto rd = body(17, careerSetup ? SDL_Color{255, 196, 40, 255} : ink::dim);
+                    rd.align = Align::Center, rd.maxWidth = 600;
+                    text(330, 626, tr(road[careerSetup]), rd);
                     plate(700, 300, 520, 250);
                     text(730, 322, tr("HOW IT WORKS"), stencil(28));
                     wrap(730, 368, 460,
                          bandCareer ? tr("Two to four players, each on their own part. The band shares one meter and "
                                          "earns the average of everyone's stars, so nobody gets carried. After the "
                                          "stadium, the Inferno: Lived, the final boss.")
-                                    : tr("Eight venues, from a garage to a stadium. Clear three songs to unlock the encore, play the "
-                                         "encore to unlock the next venue. New stars earn cash for the shop."),
+                                    : tr("From a garage to a stadium, and one more venue with its own boss for each step of "
+                                         "difficulty. Clear three songs to unlock the encore, play the encore to unlock the "
+                                         "next venue. On Expert, Lived waits in the Inferno."),
                          18, ink::white);
                     if (career.active)
                         text(730, 500, tr("Starting over keeps your cash and the shop"), body(16, ink::acid));
@@ -4570,13 +4599,13 @@ int main(int argc, char **argv) {
             } else if (screen == Screen::Battle) {
                 const auto &rv = duel::rivals();
                 const bool pvp = battleRow >= rv.size();
-                static const int hostOf[4] = {3, 5, 7, career::infernoVenue};
                 stage::Cues cues;
                 cues.time = ui, cues.beat = ui * 2.1, cues.multiplier = 3, cues.meter = .72;
-                cues.venue = pvp ? 6 : hostOf[std::min<size_t>(battleRow, 3)];
+                cues.venue = pvp ? 6 : career::hostVenue(battleRival(battleRow));
                 if (!pvp) {
-                    cues.rival = int(battleRow), cues.rivalColor = rv[battleRow].color;
-                    cues.bandDuel = rv[battleRow].bandOnly || battleBand == 1;
+                    const int br = battleRival(battleRow);
+                    cues.rival = br, cues.rivalColor = rv[size_t(br)].color;
+                    cues.bandDuel = rv[size_t(br)].bandOnly || battleBand == 1;
                 }
                 dress(cues, nullptr);
                 stage::draw(cues);
@@ -4586,30 +4615,31 @@ int main(int argc, char **argv) {
                 text(60, 28, tr("BATTLE"), head);
                 text(64, 104, tr("rematch the rivals, or battle each other"), marker(24, {198, 200, 212, 255}, -2));
                 const SDL_Color lockInk{110, 110, 120, 255};
-                plate(50, 150, 560, 40.f + 70 * float(rv.size() + 1));
+                plate(50, 140, 560, 24.f + 58 * float(rv.size() + 1));
                 for (size_t i = 0; i <= rv.size(); ++i) {
-                    const float y = 170 + 70 * float(i);
+                    const float y = 156 + 58 * float(i);
                     const bool isPvp = i == rv.size();
-                    const bool open = isPvp || battleOpen(int(i));
-                    const SDL_Color rc = isPvp ? ink::acid : SDL_Color{Uint8(rv[i].color >> 16), Uint8(rv[i].color >> 8), Uint8(rv[i].color), 255};
+                    const int ri = isPvp ? 0 : battleRival(i);
+                    const auto &who = rv[size_t(ri)];
+                    const bool open = isPvp || battleOpen(ri);
+                    const SDL_Color rc = isPvp ? ink::acid : SDL_Color{Uint8(who.color >> 16), Uint8(who.color >> 8), Uint8(who.color), 255};
                     if (i == battleRow) {
-                        glow(330, y + 28, 600, 100, alpha(rc, .2f));
-                        rect(64, y - 4, 532, 62, {255, 255, 255, 24});
-                        rect(64, y - 4, 5, 62, rc);
+                        glow(330, y + 24, 600, 90, alpha(rc, .2f));
+                        rect(64, y - 4, 532, 54, {255, 255, 255, 24});
+                        rect(64, y - 4, 5, 54, rc);
                     }
-                    auto nm = stencil(30, open ? ink::chrome : lockInk, open ? rc : lockInk);
+                    auto nm = stencil(26, open ? ink::chrome : lockInk, open ? rc : lockInk);
                     nm.maxWidth = 330;
-                    text(86, y, isPvp ? std::string(tr("PLAYER VS PLAYER")) : std::string(rv[i].name), nm);
-                    auto ti = body(16, open ? ink::dim : SDL_Color{80, 80, 90, 255});
+                    text(86, y, isPvp ? std::string(tr("PLAYER VS PLAYER")) : std::string(who.name), nm);
+                    auto ti = body(15, open ? ink::dim : SDL_Color{80, 80, 90, 255});
                     ti.maxWidth = 360;
-                    text(88, y + 36, isPvp ? tr("two to four players attack each other") : tr(rv[i].title), ti);
-                    auto st = body(18, open ? ink::acid : lockInk);
+                    text(88, y + 30, isPvp ? tr("two to four players attack each other") : tr(who.title), ti);
+                    auto st = body(17, open ? ink::acid : lockInk);
                     st.align = Align::Right;
-                    const bool beaten = !isPvp && (bandSave.beaten.count(int(i)) || soloSave.beaten.count(int(i)));
-                    text(586, y + 8, isPvp ? tr("2-4 PLAYERS") : beaten ? tr("BEATEN") : open ? tr("UNLOCKED") : tr("LOCKED"), st);
-                    if (!isPvp && rv[i].bandOnly)
-                        sticker(86 + measure(rv[i].name, Face::Stencil, 30) + 80, y + 18, 26, -6, open ? rc : lockInk,
-                                tr("BAND ONLY"));
+                    const bool beaten = !isPvp && (bandSave.beaten.count(ri) || soloSave.beaten.count(ri));
+                    text(586, y + 6, isPvp ? tr("2-4 PLAYERS") : beaten ? tr("BEATEN") : open ? tr("UNLOCKED") : tr("LOCKED"), st);
+                    if (!isPvp && ri == duel::finalBoss)
+                        sticker(86 + measure(who.name, Face::Stencil, 26) + 50, y + 14, 22, -6, open ? rc : lockInk, tr("BOSS"));
                 }
                 plate(660, 150, 570, 330);
                 if (pvp) {
@@ -4621,7 +4651,8 @@ int main(int argc, char **argv) {
                     text(692, 300, tr("An empty meter knocks you out."), b);
                     text(692, 328, tr("Last one standing wins."), b);
                 } else {
-                    const auto &r = rv[battleRow];
+                    const int br = battleRival(battleRow);
+                    const auto &r = rv[size_t(br)];
                     const SDL_Color rc{Uint8(r.color >> 16), Uint8(r.color >> 8), Uint8(r.color), 255};
                     auto big = stencil(48, {255, 255, 255, 255}, rc);
                     big.glow = alpha(rc, .7f), big.maxWidth = 520;
@@ -4629,11 +4660,11 @@ int main(int argc, char **argv) {
                     auto q = body(18, ink::white);
                     q.maxWidth = 520;
                     text(692, 236, std::string("\"") + tr(r.taunt) + "\"", q);
-                    const career::Gig gig = rivalSong(rivalReached(bandSave, int(battleRow)) ? bandSave : soloSave, int(battleRow));
+                    const career::Gig gig = rivalSong(rivalReached(bandSave, br) ? bandSave : soloSave, br);
                     text(692, 290, tr("song"), body(16, ink::dim));
-                    auto sn = body(22, battleOpen(int(battleRow)) ? ink::white : lockInk);
+                    auto sn = body(22, battleOpen(br) ? ink::white : lockInk);
                     sn.maxWidth = 520;
-                    text(692, 312, battleOpen(int(battleRow)) && !gig.folder.empty() ? gig.name + "  /  " + gig.artist : "???", sn);
+                    text(692, 312, battleOpen(br) && !gig.folder.empty() ? gig.name + "  /  " + gig.artist : "???", sn);
                     text(692, 370, tr("mode"), body(16, ink::dim));
                     const bool band = r.bandOnly || battleBand == 1;
                     auto md = marker(30, ink::acid, -1);
@@ -5340,7 +5371,6 @@ int main(int argc, char **argv) {
                 // A band (or a battle) plays on a stage instead: the venue, the
                 // band, and the rival when there is one.
                 if (multiMode != MultiMode::Versus && settings.stage) {
-                    static const int hostOf[4] = {3, 5, 7, career::infernoVenue};
                     stage::Cues cues;
                     cues.time = time;
                     cues.beat = song->tickAt(time) / song->resolution;
@@ -5353,7 +5383,7 @@ int main(int argc, char **argv) {
                     cues.multiplier = best, cues.meter = multi->bandMeter(), cues.meterRed = Session::meterRed;
                     cues.failed = multi->bandFailed;
                     cues.venue = careerRun && careerTier < career.tiers.size() ? career.tiers[careerTier].venue
-                               : duelRival >= 0 && multiMode == MultiMode::BandDuel ? hostOf[std::min(duelRival, 3)]
+                               : duelRival >= 0 && multiMode == MultiMode::BandDuel ? career::hostVenue(duelRival)
                                                                                     : 6;
                     dress(cues, nullptr);
                     if (duelState) {
@@ -6283,11 +6313,31 @@ int main(int argc, char **argv) {
                         finishMulti(!win && multiMode == MultiMode::Band);
                     }
                 }
+                if (frames == 0 && o == "duel") {
+                    // A solo Expert career duel: SWITCH_HERO_OPEN=duel SWITCH_HERO_RIVAL=n.
+                    bandCareer = false;
+                    career = career::Career{};
+                    career.tiers = buildTiers(3);
+                    career.active = true, career.difficulty = 3, career.band = career::bandName(careerSeed);
+                    const int want = std::getenv("SWITCH_HERO_RIVAL") ? std::atoi(std::getenv("SWITCH_HERO_RIVAL")) : 4;
+                    for (size_t t = 0; t < career.tiers.size(); ++t)
+                        if (career.tiers[t].rival == want)
+                            careerTier = t;
+                    const auto &tier = career.tiers[careerTier];
+                    song = std::make_unique<Song>(loadSong(root / tier.duel.folder));
+                    trackIndex = size_t(std::max(0, findTrack(*song, "Guitar", nearestDifficulty(*song, "Guitar", 3))));
+                    careerRun = true, duelRun = true, duelRival = tier.rival, careerSong = tier.songs.size();
+                    start();
+                    restartClock();
+                    screen = Screen::Playing;
+                }
+                if (o == "duel" && session && frames > 0)
+                    session->meter = .7;
                 if (frames == 0 && o == "menu")
                     screen = Screen::Main, mainRow = std::getenv("SWITCH_HERO_ROW") ? std::atoi(std::getenv("SWITCH_HERO_ROW")) : 1;
                 else if (frames == 0 && (screen == Screen::Main || screen == Screen::Language)) {
                     if (o == "setup") {
-                        careerSetup = 2, careerBand = career::bandName(careerSeed);
+                        careerSetup = std::getenv("SWITCH_HERO_ROW") ? std::atoi(std::getenv("SWITCH_HERO_ROW")) : 2, careerBand = career::bandName(careerSeed);
                     } else {
                         if (!career.active) {
                             std::vector<std::pair<fs::path, std::pair<std::string, std::string>>> pool;

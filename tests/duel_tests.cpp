@@ -53,10 +53,17 @@ double beatenAt(const Track &t, int rival, uint32_t seed) {
 
 int main() {
     const Track t = chart();
-    check(rivals().size() == 4, "three rivals and the final boss");
-    check(rivals()[0].skill < rivals()[1].skill && rivals()[1].skill < rivals()[2].skill, "rivals get harder");
-    check(rivals()[finalBoss].bandOnly && !rivals()[0].bandOnly && rivals()[finalBoss].skill > rivals()[2].skill,
-          "Lived is the hardest and fights bands only");
+    check(rivals().size() == 7, "three rivals, the final boss and three bosses past the stadium");
+    {
+        // In the order a career meets them, every rival is better than the last.
+        const int order[7] = {0, 1, 2, 4, 5, 6, finalBoss};
+        bool rising = true;
+        for (int i = 1; i < 7; ++i)
+            rising = rising && rivals()[size_t(order[i])].skill > rivals()[size_t(order[i - 1])].skill;
+        check(rising, "rivals get harder, and Lived is the hardest");
+        for (const auto &r : rivals())
+            check(!r.bandOnly, "every rival can be fought alone or as a band");
+    }
     check(std::string(rivals()[finalBoss].name) == "Lived", "the final boss is Lived");
     {
         bool seen[5] = {};
@@ -100,8 +107,8 @@ int main() {
     }
     // Every rival can be beaten by a player who lands every phrase and throws
     // each attack; the harder the rival, the longer it holds out.
-    double times[3];
-    for (int r = 0; r < 3; ++r) {
+    double times[7];
+    for (int r = 0; r < 7; ++r) {
         times[r] = beatenAt(t, r, 42);
         check(times[r] > 0, "an attacking player can beat every rival");
     }
@@ -135,6 +142,12 @@ int main() {
     c.beaten.insert(0);
     check(c.tierOpen(scores, 4), "beating the rival opens the next venue");
     check(career::Career::duelPrize(2) > career::Career::duelPrize(0), "bigger rivals pay more");
+    check(career::Career::duelPrize(6) > career::Career::duelPrize(4) && career::Career::duelPrize(4) > career::Career::duelPrize(2) &&
+              career::Career::duelPrize(finalBoss) > career::Career::duelPrize(6),
+          "the bosses past the stadium pay more, and Lived the most");
+    check(career::hostVenue(4) == 9 && career::hostVenue(5) == 10 && career::hostVenue(6) == 11 &&
+              career::hostVenue(finalBoss) == career::infernoVenue,
+          "each boss has a venue of its own");
 
     if (failures)
         return EXIT_FAILURE;

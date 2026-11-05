@@ -260,16 +260,18 @@ struct Show { // what everyone reacts to this frame
     uint8_t held;
 };
 
-// How each venue dresses the stage. Index 8 is the Inferno, 9 the Quickplay club.
+// How each venue dresses the stage. Index 8 is the Inferno, 9 to 11 the venues
+// past the stadium, 12 the Quickplay club.
 struct VenueLook {
     SDL_Color keyA, keyB, fillA, fillB; // light palettes the show drifts between
     int led;        // 0 none, 1 small screen, 2 full wall, 3 full wall and side screens
     int lamps;      // lamps on the truss (0: bare bulbs hanging from the ceiling)
-    int backdrop;   // 0 brick, 1 black wall, 2 open sky at sunset, 3 a cavern of lava
+    int backdrop;   // 0 brick, 1 black wall, 2 open sky at sunset, 3 a cavern of lava,
+                    // 4 an ice field under an aurora, 5 open space with a planet
     float crowd;    // how full the pit is, 0..1
     float level;    // overall brightness
 };
-const VenueLook venueLooks[10] = {
+const VenueLook venueLooks[13] = {
     {{255, 190, 110, 255}, {255, 150, 80, 255}, {90, 70, 50, 255}, {70, 60, 60, 255}, 0, 0, 0, .25f, .8f},     // garage
     {{255, 170, 70, 255}, {60, 200, 190, 255}, {120, 70, 30, 255}, {30, 100, 100, 255}, 1, 3, 0, .45f, .9f}, // tavern
     {{140, 230, 80, 255}, {250, 220, 60, 255}, {40, 90, 40, 255}, {90, 80, 30, 255}, 1, 4, 1, .6f, 1},        // campus
@@ -279,9 +281,12 @@ const VenueLook venueLooks[10] = {
     {{110, 180, 255, 255}, {240, 240, 255, 255}, {40, 70, 160, 255}, {90, 90, 130, 255}, 3, 7, 1, 1, 1.05f}, // arena
     {{255, 200, 90, 255}, {255, 255, 235, 255}, {140, 100, 40, 255}, {120, 120, 110, 255}, 3, 9, 2, 1, 1.1f}, // stadium
     {{255, 60, 20, 255}, {255, 150, 30, 255}, {190, 20, 10, 255}, {160, 50, 10, 255}, 2, 6, 3, 1, 1.15f},      // the Inferno
+    {{255, 150, 70, 255}, {40, 210, 190, 255}, {150, 70, 40, 255}, {20, 110, 120, 255}, 3, 7, 2, 1, 1.05f},    // harbour barge
+    {{130, 230, 255, 255}, {120, 255, 170, 255}, {40, 90, 150, 255}, {30, 130, 100, 255}, 3, 8, 4, 1, 1.1f},   // glacier festival
+    {{150, 120, 255, 255}, {120, 255, 90, 255}, {60, 40, 150, 255}, {40, 120, 60, 255}, 3, 9, 5, 1, 1.1f},     // orbital arena
     {{255, 176, 90, 255}, {245, 80, 180, 255}, {80, 120, 255, 255}, {60, 200, 190, 255}, 2, 5, 1, .8f, 1},    // quickplay club
 };
-const VenueLook *vl = &venueLooks[9];
+const VenueLook *vl = &venueLooks[12];
 V3 hexColor(unsigned c) { return {((c >> 16) & 255) / 255.f, ((c >> 8) & 255) / 255.f, (c & 255) / 255.f}; }
 V3 guitarFinish{.12f, .62f, .6f}, jacketColour{.1f, .1f, .11f};
 bool pyroOn = false;
@@ -593,6 +598,69 @@ void rivalFigure(const Show &in) {
         cylinder(k.head.at(k.headC, .06f, .11f, 0), k.head.at(k.headC, .08f, .28f, 0), .008f, .006f, st.jacket, 4, false);
         sphere(k.head.at(k.headC, .08f, .29f, 0), .02f, rivalColour, 6, 4);
         neck = .7f;
+    } else if (rivalOn == 4) { // Capitã Maré: tricorn hat, eye patch, a navy coat with gold buttons
+        const V3 navy = {.08f, .12f, .3f}, gold = {.9f, .7f, .2f};
+        st = {{.78f, .58f, .44f}, {.92f, .9f, .85f}, navy, {.2f, .14f, .1f}, {.1f, .07f, .05f}, {.15f, .08f, .05f}, 1, true};
+        legs(k, st);
+        // The long coat tails first.
+        frustum(k.pelvis + k.body.u * -.55f - k.body.f * .02f, k.pelvis + k.body.u * .1f, k.body.f, .26f, .14f, .2f, .12f, navy);
+        trunk(k, st);
+        for (int i = 0; i < 3; ++i)
+            for (int side : {-1, 1})
+                sphere(k.pelvis + k.body.u * (.16f + i * .1f) + k.body.r * (side * .09f) + k.body.f * .14f, .015f, gold, 5, 3);
+        box(k.pelvis + k.body.u * .02f + k.body.f * .12f, k.body, .18f, .03f, .01f, {.1f, .06f, .04f}); // belt
+        head(k, st, s.failed ? 0 : (1 - s.ph) * .5f);
+        const Frame &h = k.head;
+        const V3 c = k.headC;
+        box(h.at(c, -.045f, .015f, .115f), h, .03f, .028f, .006f, {.03f, .03f, .03f});                   // eye patch
+        cylinder(h.at(c, -.11f, .06f, 0), h.at(c, .11f, .06f, 0), .006f, .006f, {.03f, .03f, .03f}, 4, false); // its strap
+        // The tricorn: a crown and three upturned flaps.
+        cylinder(h.at(c, 0, .1f, -.01f), h.at(c, 0, .2f, -.01f), .1f, .085f, {.06f, .05f, .05f}, 10);
+        for (int i = 0; i < 3; ++i) {
+            const float a = i * 2 * Pi / 3 + Pi / 2;
+            const V3 dir = h.r * std::cos(a) + h.f * std::sin(a);
+            box(h.at(c, 0, .12f, -.01f) + dir * .12f, frameFrom(h.u + dir * -.6f, dir), .1f, .045f, .008f, {.06f, .05f, .05f});
+        }
+        box(h.at(c, 0, .16f, .11f), h, .03f, .02f, .004f, gold); // badge
+        neck = .5f;
+    } else if (rivalOn == 5) { // Grizzlo: a big white yeti with a blue face
+        const V3 fur = {.9f, .92f, .95f}, face = {.35f, .5f, .7f};
+        st = {face, fur, fur, fur, {.3f, .35f, .45f}, fur, 0, true};
+        legs(k, st);
+        ellipsoid(k.pelvis + k.body.u * .28f, k.body, .3f, .38f, .22f, fur, 12, 8); // the belly
+        for (int i = 0; i < 14; ++i) { // shaggy tufts
+            const float a = hash01(uint32_t(i * 7)) * 2 * Pi, y = .05f + .5f * hash01(uint32_t(i * 11));
+            sphere(k.pelvis + k.body.u * y + k.body.r * (std::cos(a) * .27f) + k.body.f * (std::sin(a) * .18f), .07f, fur * .95f, 6, 4);
+        }
+        const Frame &h = k.head;
+        const V3 c = k.headC + k.body.u * .04f;
+        ellipsoid(c, h, .15f, .15f, .14f, fur, 10, 6);
+        ellipsoid(h.at(c, 0, -.02f, .08f), h, .09f, .09f, .07f, face, 10, 5);
+        for (int side : {-1, 1}) {
+            box(h.at(c, side * .04f, .02f, .145f), h, .015f, .015f, .005f, {.05f, .05f, .08f});
+            cylinder(h.at(c, side * .1f, .1f, 0), h.at(c, side * .16f, .2f, -.02f), .025f, .004f, {.85f, .82f, .7f}, 5, false); // little horns
+            box(h.at(c, side * .025f, -.07f, .15f), h, .012f, .02f, .006f, {1, 1, 1});                                        // fangs
+        }
+        neck = .45f;
+    } else if (rivalOn == 6) { // Zorg Nebula: a green, three-eyed alien in a silver suit
+        const V3 green = {.35f, .8f, .3f}, silver = {.75f, .77f, .82f};
+        st = {green, silver, silver, silver, {.3f, .3f, .35f}, green, 0, true};
+        legs(k, st);
+        trunk(k, st);
+        box(k.pelvis + k.body.u * .32f + k.body.f * .13f, k.body, .06f, .06f, .005f, rivalColour); // the badge glows
+        const Frame &h = k.head;
+        const V3 c = k.headC + k.head.u * .04f;
+        ellipsoid(c, h, .13f, .17f, .12f, green, 12, 7); // a tall bald head
+        emissive = true;
+        for (float x : {-.055f, 0.f, .055f})
+            sphere(h.at(c, x, .02f + (x == 0 ? .04f : 0), .11f), .022f, V3{.1f, 1.f, .3f} * (.75f + .25f * std::pow(1 - s.ph, 2.0f)), 6, 4);
+        emissive = false;
+        for (int side : {-1, 1}) {
+            const V3 base = h.at(c, side * .05f, .16f, 0), tip = base + h.dir(side * .06f, .14f, 0);
+            cylinder(base, tip, .008f, .006f, green, 4, false);
+            sphere(tip, .025f, rivalColour, 6, 4);
+        }
+        neck = .65f;
     } else { // Lived: an eighties album-cover devil, played for laughs
         const V3 red = {.8f, .1f, .08f}, black = {.05f, .04f, .05f}, ivory = {.93f, .88f, .74f};
         st = {red, red * .9f, black, black, {.12f, .05f, .05f}, black, 0, true};
@@ -669,6 +737,35 @@ void rivalFigure(const Show &in) {
         box(fr.at(g.bodyC, .62f, 0, .01f), fr, .015f, .09f, .015f, steel);
         for (float off : {-.08f, 0.f, .08f})
             frustum(fr.at(g.bodyC, .63f, off, .01f), fr.at(g.bodyC, .76f, off, .01f), g.face, .012f, .012f, .002f, .002f, steel);
+    } else if (rivalOn == 4) {
+        // A ship's-wood body with a brass anchor on it.
+        slab(fr.at(g.bodyC, -.04f, 0, 0), fr, [](float) { return .19f; }, 22, .06f, {.45f, .26f, .12f}, {.3f, .17f, .08f});
+        box(fr.at(g.bodyC, .12f + .24f, 0, .01f), fr, .24f, .025f, .016f, {.3f, .18f, .1f});
+        const V3 brass = {.85f, .65f, .25f};
+        box(fr.at(g.bodyC, -.04f, 0, .035f), fr, .015f, .11f, .006f, brass);
+        box(fr.at(g.bodyC, -.04f, -.09f, .035f), fr, .07f, .015f, .006f, brass);
+        box(fr.at(g.bodyC, -.04f, .07f, .035f), fr, .04f, .012f, .006f, brass);
+    } else if (rivalOn == 5) {
+        // A flying V carved out of ice, glowing at the edges.
+        for (int side : {-1, 1})
+            box(fr.at(g.bodyC, -.12f, side * .1f, 0), Frame{frameFrom(g.across * float(side) + g.along * -.6f, g.face).u * -1,
+                                                              frameFrom(g.across * float(side) + g.along * -.6f, g.face).r,
+                                                              g.face},
+                .06f, .22f, .03f, {.7f, .9f, 1.f});
+        box(fr.at(g.bodyC, .12f + .24f, 0, .01f), fr, .24f, .026f, .016f, {.6f, .8f, .95f});
+        emissive = true;
+        box(fr.at(g.bodyC, .12f + .24f, 0, .028f), fr, .24f, .005f, .002f, rivalColour);
+        emissive = false;
+    } else if (rivalOn == 6) {
+        // A flying saucer with a neck, its rim lights chasing round.
+        slab(fr.at(g.bodyC, -.04f, 0, 0), fr, [](float) { return .2f; }, 24, .05f, {.7f, .72f, .78f}, {.45f, .47f, .52f});
+        box(fr.at(g.bodyC, .12f + .24f, 0, .01f), fr, .24f, .024f, .016f, {.4f, .42f, .48f});
+        emissive = true;
+        for (int i = 0; i < 6; ++i) {
+            const float a = i * Pi / 3 + float(s.beat) * Pi / 2;
+            sphere(fr.at(g.bodyC, -.04f + .17f * std::cos(a), .17f * std::sin(a), .03f), .018f, rivalColour, 5, 3);
+        }
+        emissive = false;
     } else {
         // Two long wings swept back from the neck: a V.
         for (int side : {-1, 1})
@@ -784,6 +881,43 @@ void stageSet(const Show &s, SDL_Color key) {
                          {x0 + .03f, y0 + .47f, -6}, {0, 0, 1}, V3{.32f, .13f, .1f} * k);
             }
         flatQuad({-12, 0, -6.01f}, {12, 0, -6.01f}, {12, 8, -6.01f}, {-12, 8, -6.01f}, {0, 0, 1}, {.08f, .06f, .05f});
+    } else if (vl->backdrop == 4) {
+        // The glacier: a night sky, an aurora rippling across it, and walls of ice.
+        emissive = true;
+        flatQuad({-30, 0, -14}, {30, 0, -14}, {30, 12, -14}, {-30, 12, -14}, {0, 0, 1}, {.02f, .04f, .1f});
+        for (int band = 0; band < 3; ++band)
+            for (int i = 0; i < 24; ++i) {
+                const float x0 = -24 + i * 2.f, x1 = x0 + 2;
+                const float w0 = std::sin(x0 * .35f + float(s.time) * .6f + band * 2.1f), w1 = std::sin(x1 * .35f + float(s.time) * .6f + band * 2.1f);
+                const float y = 6.5f + band * .9f;
+                const V3 c = (band == 1 ? V3{.3f, .9f, .9f} : V3{.25f, 1.f, .45f}) * (.35f + .2f * band);
+                flatQuad({x0, y + w0, -13.9f}, {x1, y + w1, -13.9f}, {x1, y + w1 + 1.4f, -13.9f}, {x0, y + w0 + 1.4f, -13.9f}, {0, 0, 1}, c);
+            }
+        emissive = false;
+        for (int i = 0; i < 9; ++i) {
+            const float x = -11 + i * 2.75f, h = 2.5f + 3.f * hash01(uint32_t(i * 17));
+            box({x, h / 2, -6.5f}, 1.2f + .4f * hash01(uint32_t(i)), h / 2, .6f, V3{.55f, .75f, .9f} * (.8f + .2f * hash01(uint32_t(i * 3))));
+        }
+    } else if (vl->backdrop == 5) {
+        // Orbit: black space full of stars, and a ringed planet hanging behind the stage.
+        emissive = true;
+        flatQuad({-30, -2, -14}, {30, -2, -14}, {30, 14, -14}, {-30, 14, -14}, {0, 0, 1}, {.01f, .01f, .03f});
+        for (int i = 0; i < 120; ++i) {
+            const float x = -26 + 52 * hash01(uint32_t(i * 7 + 1)), y = 13 * hash01(uint32_t(i * 13 + 5));
+            const float r = .03f + .05f * hash01(uint32_t(i * 3)), tw = .6f + .4f * std::sin(float(s.time) * 3 + i);
+            flatQuad({x - r, y - r, -13.9f}, {x + r, y - r, -13.9f}, {x + r, y + r, -13.9f}, {x - r, y + r, -13.9f}, {0, 0, 1},
+                     V3{1, 1, 1} * tw);
+        }
+        emissive = false;
+        sphere({7, 8.5f, -12.5f}, 3.2f, {.55f, .3f, .7f}, 18, 10);
+        for (int i = 0; i < 32; ++i) { // the ring, edge-on and tilted
+            const float a0 = i * 2 * Pi / 32, a1 = (i + 1) * 2 * Pi / 32;
+            const V3 p0 = {7 + 5.2f * std::cos(a0), 8.5f + 1.1f * std::sin(a0) - .6f * std::cos(a0), -12.4f},
+                     p1 = {7 + 5.2f * std::cos(a1), 8.5f + 1.1f * std::sin(a1) - .6f * std::cos(a1), -12.4f};
+            emissive = true;
+            flatQuad(p0, p1, p1 + V3{0, .18f, 0}, p0 + V3{0, .18f, 0}, {0, 0, 1}, {.75f, .65f, .5f});
+            emissive = false;
+        }
     } else if (vl->backdrop == 3) {
         // The Inferno: black rock split by glowing cracks of lava that breathe with the beat.
         flatQuad({-12, 0, -6.01f}, {12, 0, -6.01f}, {12, 8, -6.01f}, {-12, 8, -6.01f}, {0, 0, 1}, {.07f, .03f, .03f});
@@ -1014,8 +1148,8 @@ void draw(const Cues &input) {
         if (const char *v = std::getenv("SWITCH_HERO_VENUE"))
             c.venue = std::atoi(v);
         if (const char *r = std::getenv("SWITCH_HERO_RIVAL")) {
-            static const unsigned colors[4] = {0xd2283c, 0xffb428, 0x3cdcff, 0xff3a14};
-            c.rival = std::atoi(r) % 4, c.rivalColor = colors[c.rival];
+            static const unsigned colors[7] = {0xd2283c, 0xffb428, 0x3cdcff, 0xff3a14, 0x1ec8aa, 0x9adcff, 0x8cff3c};
+            c.rival = std::atoi(r) % 7, c.rivalColor = colors[c.rival];
             c.bandDuel = std::getenv("SWITCH_HERO_BAND_DUEL") != nullptr;
         }
         if (const char *o = std::getenv("SWITCH_HERO_OUTCOME"))
@@ -1044,9 +1178,9 @@ void draw(const Cues &input) {
         s.energy = 0;
     s.hit = ease(c.time - mem.lastHit, .14), s.miss = ease(c.time - mem.lastMiss, .5);
 
-    vl = &venueLooks[c.venue >= 0 && c.venue < 9 ? c.venue : 9];
+    vl = &venueLooks[c.venue >= 0 && c.venue < 12 ? c.venue : 12];
     guitarFinish = hexColor(c.guitarColor), jacketColour = hexColor(c.jacketColor), pyroOn = c.pyro;
-    rivalOn = c.rival >= 0 && c.rival <= 3 ? c.rival : -1;
+    rivalOn = c.rival >= 0 && c.rival <= 6 ? c.rival : -1;
     rivalColour = hexColor(c.rivalColor);
     rivalHurt = ease(c.time - c.rivalHurtAt, .6), rivalStrike = ease(c.time - c.rivalStrikeAt, .8);
     outcome = rivalOn >= 0 ? c.outcome : 0;

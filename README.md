@@ -24,6 +24,10 @@ Clone Hero's proprietary source.
 | ![Out](docs/band-out.jpg) | ![Band result](docs/band-result.jpg) |
 | **Battle menu** | **Player vs player** |
 | ![Battle](docs/battle.jpg) | ![Battle attack](docs/battle-attack.jpg) |
+| **Harder careers go further** | **Capitã Maré, the harbour boss** |
+| ![Expert career](docs/career-expert.jpg) | ![Capitã Maré](docs/boss-captain.jpg) |
+| **Grizzlo, the glacier boss** | **Zorg Nebula, the orbital boss** |
+| ![Grizzlo](docs/boss-grizzlo.jpg) | ![Zorg Nebula](docs/boss-zorg.jpg) |
 
 ## Stage, career, band career and battles (this fork)
 
@@ -55,6 +59,15 @@ stage. Star phrases arm attacks instead of star power, and both sides throw them
 lefty flip, overdrive, blackout and a broken string you mash to mend. Run the
 rival's meter dry, or finish the song ahead, to win a prize and the next venue.
 The winner celebrates on stage; the loser hangs their head.
+
+**Harder careers go further.** Each step of difficulty adds one more venue past
+the stadium, with a boss of its own: Medium adds the Harbour Barge and
+Capitã Maré (a pirate captain with a tricorn and an anchor guitar), Hard adds the
+Glacier Festival and Grizzlo (a yeti with a flying V of ice), and Expert adds
+the Orbital Arena and Zorg Nebula (a three-eyed alien with a flying-saucer
+guitar), then the Inferno, where Lived is the final boss of an Expert career
+too. Each boss is a little sharper than the last. Careers saved before this
+are dealt again on Medium and up, keeping the band, cash, shop and rivals beaten.
 
 **Band career (2 to 4 players).** The same road, played by a band on one docked
 console: each player picks a part (guitar, bass, rhythm, keys) and difficulty in

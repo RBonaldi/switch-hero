@@ -116,6 +116,35 @@ int main() {
     none.load(root / "missing.cfg");
     check(!none.active, "no file, no career");
 
+    // Harder careers go past the stadium: one more venue, and its boss, per step.
+    {
+        std::vector<std::pair<fs::path, std::pair<std::string, std::string>>> big;
+        for (int i = 0; i < 60; ++i) {
+            const fs::path folder = root / ("big" + std::to_string(i));
+            fs::create_directories(folder);
+            std::ofstream(folder / "song.ini") << "[song]\nname = Big " << i << "\ndiff_guitar = " << i % 7 << "\n";
+            big.push_back({folder, {"Big " + std::to_string(i), "Band"}});
+        }
+        const int wantTiers[4] = {8, 9, 10, 11};
+        for (int d = 0; d < 4; ++d) {
+            const auto ladder = buildSetlists(big, d);
+            check(ladder.size() == size_t(wantTiers[d]), "one more venue per step of difficulty");
+            for (size_t t = 8; t < ladder.size(); ++t)
+                check(ladder[t].venue == extraVenues[t - 8] && ladder[t].rival == int(t) - 4,
+                      "the venues past the stadium come with their bosses");
+            check(ladder[7].venue == 7 && ladder[7].rival == 2, "the stadium is still the eighth stop");
+        }
+        // A career from before those venues is dealt again on Medium and up.
+        std::ofstream(root / "v2.cfg") << "switch-hero career 2\nband\tOld\ndifficulty\t3\ntier\t0\ngig\tbig0\tBig 0\tBand\t0\n";
+        Career v2;
+        v2.load(root / "v2.cfg");
+        check(v2.stale && v2.staleFrom == 2, "a version 2 career on Expert gets the new venues");
+        std::ofstream(root / "v2e.cfg") << "switch-hero career 2\nband\tOld\ndifficulty\t0\ntier\t0\ngig\tbig0\tBig 0\tBand\t0\n";
+        Career easy;
+        easy.load(root / "v2e.cfg");
+        check(!easy.stale, "an Easy career has no venues to gain");
+    }
+
     // The band career: its own star record, and the Inferno after the stadium.
     {
         Career band;
@@ -125,7 +154,7 @@ int main() {
         const size_t inferno = band.tiers.size() - 1;
         check(band.tiers[inferno].venue == infernoVenue && band.tiers[inferno].rival == 3 && band.tiers[inferno].songs.empty(),
               "the Inferno hosts only the final boss");
-        check(venues().size() == 9 && std::string(venues()[infernoVenue].name) == "The Inferno", "nine venues, the last one hot");
+        check(venues().size() == 12 && std::string(venues()[infernoVenue].name) == "The Inferno", "twelve venues, one of them hot");
         check(band.stars(scores, tiers[0].songs[0]) == 0, "a band career ignores solo scores");
         band.recordBand(tiers[0].songs[0], 4);
         band.recordBand(tiers[0].songs[0], 2);

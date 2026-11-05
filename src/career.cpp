@@ -43,6 +43,9 @@ const std::vector<Venue> &venues() {
         {"Metropolis Arena", "Your name in lights. Your face on the big screens.", 30000},
         {"Legends Stadium", "Sold out in four minutes. This is the one they will talk about.", 80000},
         {"The Inferno", "Under the stadium, a door that was never on the map. It is very warm in there.", 666},
+        {"Harbour Barge", "A stage bolted to a cargo barge. The whole bay listens from their boats.", 20000},
+        {"Glacier Festival", "Walls of ice, an aurora overhead, and a bass line that makes the glacier hum.", 40000},
+        {"Orbital Arena", "The first concert in orbit. In space nobody hears you scream, but they hear you shred.", 120000},
     };
     return v;
 }
@@ -171,12 +174,17 @@ std::vector<Tier> buildSetlists(const std::vector<std::pair<fs::path, std::pair<
     // Five songs a venue (four and an encore) when the library allows it,
     // at least two otherwise, never more than eight venues.
     const size_t perTier = all.size() >= 40 ? 5 : std::max<size_t>(2, std::min<size_t>(5, all.size() / 8 + 2));
-    const size_t count = std::min<size_t>(8, std::max<size_t>(1, all.size() / perTier));
+    const size_t extra = size_t(std::clamp(difficulty, 0, 3));
+    const size_t count = std::min<size_t>(8 + extra, std::max<size_t>(1, all.size() / perTier));
     // With more songs than places, spread the picks evenly over the whole range.
     const size_t slots = count * perTier;
     for (size_t t = 0; t < count; ++t) {
         Tier tier;
-        tier.venue = count == 1 ? 0 : int(std::lround(double(t) * 7 / double(count - 1)));
+        // The first eight run from the garage to the stadium; any more go past it.
+        const size_t base = std::min<size_t>(count, 8);
+        tier.venue = t >= 8 ? extraVenues[t - 8]
+                   : base == 1 ? 0
+                               : int(std::lround(double(t) * 7 / double(base - 1)));
         for (size_t i = 0; i < perTier; ++i) {
             const size_t slot = t * perTier + i;
             const size_t pick = slots >= all.size() ? slot : slot * all.size() / slots;
@@ -193,11 +201,11 @@ std::vector<Tier> buildSetlists(const std::vector<std::pair<fs::path, std::pair<
 }
 
 void assignDuels(std::vector<Tier> &tiers) {
-    // Rivals by venue: the Neon Club, the Sunset Festival and the stadium.
-    const int hosts[3] = {3, 5, 7};
-    for (int r = 0; r < 3; ++r)
+    // Rivals by venue: the Neon Club, the Sunset Festival, the stadium, and
+    // the bosses past it. Lived (3) is placed by addFinalBoss instead.
+    for (int r : {0, 1, 2, 4, 5, 6})
         for (auto &t : tiers)
-            if (t.venue == hosts[r] && t.rival < 0 && !t.songs.empty()) {
+            if (t.venue == hostVenue(r) && t.rival < 0 && !t.songs.empty()) {
                 t.rival = r, t.duel = t.songs.back();
                 break;
             }
@@ -210,9 +218,11 @@ void Career::load(const fs::path &path) {
     if (!std::getline(in, line))
         return;
     line = trim(line);
-    if (line != "switch-hero career 1" && line != "switch-hero career 2")
+    if (line != "switch-hero career 1" && line != "switch-hero career 2" && line != "switch-hero career 3")
         return;
-    stale = line == "switch-hero career 1"; // ordered by song.ini ratings: rebuild
+    // Version 1 was ordered by song.ini ratings; version 2 predates the venues
+    // past the stadium. Both are dealt again, keeping everything else.
+    staleFrom = line == "switch-hero career 1" ? 1 : line == "switch-hero career 2" ? 2 : 0;
     while (std::getline(in, line)) {
         const auto parts = split(line);
         if (parts.empty())
@@ -240,14 +250,14 @@ void Career::load(const fs::path &path) {
             else if (k == "beaten" && parts.size() > 1)
                 beaten.insert(std::stoi(parts[1]));
             else if (k == "duel" && parts.size() > 5 && !tiers.empty()) {
-                tiers.back().rival = std::clamp(std::stoi(parts[1]), 0, 3);
+                tiers.back().rival = std::clamp(std::stoi(parts[1]), 0, 6);
                 tiers.back().duel = {parts[2], parts[3], parts[4], std::stoi(parts[5])};
             }
             else if (k == "paid" && parts.size() > 2)
                 paid[parts[1]] = std::stoi(parts[2]);
             else if (k == "tier" && parts.size() > 1) {
                 Tier t;
-                t.venue = std::clamp(std::stoi(parts[1]), 0, infernoVenue);
+                t.venue = std::clamp(std::stoi(parts[1]), 0, extraVenues[2]);
                 tiers.push_back(t);
             } else if (k == "gig" && parts.size() > 4 && !tiers.empty()) {
                 Gig g;
@@ -259,6 +269,10 @@ void Career::load(const fs::path &path) {
         }
     }
     active = !tiers.empty();
+    // A version 2 career on Easy has no venues to gain: only harder ones are dealt again.
+    if (staleFrom == 2 && difficulty == 0)
+        staleFrom = 0;
+    stale = staleFrom != 0;
     bool anyDuel = false;
     for (const auto &t : tiers)
         anyDuel = anyDuel || t.rival >= 0;
@@ -273,7 +287,7 @@ void Career::save(const fs::path &path) const {
         std::ofstream out(temp, std::ios::binary | std::ios::trunc);
         if (!out)
             throw std::runtime_error("Cannot save the career: " + path.string());
-        out << "switch-hero career 2\n";
+        out << "switch-hero career 3\n";
         if (bandMode)
             out << "mode\tband\n";
         for (const auto &[folder, stars] : bandStars)
@@ -363,6 +377,24 @@ int Career::award(const Gig &gig, size_t tier, int earned) {
 void Career::recordBand(const Gig &gig, int earned) {
     int &best = bandStars[gig.folder];
     best = std::max(best, earned);
+}
+int hostVenue(int rival) {
+    switch (rival) {
+    case 0: return 3;
+    case 1: return 5;
+    case 2: return 7;
+    case 3: return infernoVenue;
+    case 4: return extraVenues[0];
+    case 5: return extraVenues[1];
+    case 6: return extraVenues[2];
+    default: return -1;
+    }
+}
+int Career::duelPrize(int rival) {
+    // By the order they are met: the club, festival and stadium, the three
+    // bosses past it, and Lived at the very end.
+    static const int prize[7] = {1500, 3000, 4500, 12000, 6000, 7500, 9000};
+    return rival >= 0 && rival < 7 ? prize[rival] : 0;
 }
 void addFinalBoss(std::vector<Tier> &tiers, const Gig &song) {
     Tier t;

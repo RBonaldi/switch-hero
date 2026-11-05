@@ -21,10 +21,15 @@ struct Venue {
     const char *blurb; // one line of story
     int capacity;      // shown on the venue card
 };
-// Eight venues in career order, then the Inferno: the band career's last
-// stop, where only the final boss plays.
+// Eight venues in career order, then the Inferno (the final boss's lair,
+// where only Lived plays), then three venues past the stadium that harder
+// careers add, one per step of difficulty: the harbour barge (Medium), the
+// glacier festival (Hard) and the orbital arena (Expert), each with a boss.
 const std::vector<Venue> &venues();
 constexpr int infernoVenue = 8;
+constexpr int extraVenues[3] = {9, 10, 11};
+// The venue a rival waits at, or -1.
+int hostVenue(int rival);
 
 struct Gig { // one song of a setlist
     std::string folder, name, artist;
@@ -62,6 +67,7 @@ struct Career {
     std::string guitar = "guitar-teal", jacket = "jacket-black";
     bool pyro = false; // fire columns bought and switched on
     bool stale = false; // setlists from before they were ordered by the charts themselves
+    int staleFrom = 0;  // the save's version when stale: 1 unordered, 2 before the extra venues
 
     void load(const fs::path &path);
     void save(const fs::path &path) const;
@@ -73,7 +79,7 @@ struct Career {
     bool encoreOpen(const Scores &scores, size_t tier) const;
     // The duel opens with the encore cleared; beating it opens the next venue.
     bool duelOpen(const Scores &scores, size_t tier) const;
-    static int duelPrize(int rival) { return 1500 + 1500 * rival; }
+    static int duelPrize(int rival);
     // Keeps the band's best stars for a gig (band careers only).
     void recordBand(const Gig &gig, int stars);
     int tierStars(const Scores &scores, size_t tier) const;
@@ -90,18 +96,21 @@ struct Career {
 double chartWeight(const Track &track);
 // Setlists from the library, as a ladder: each song is weighed on the guitar
 // chart it will actually be played on at `difficulty` and the songs are dealt,
-// lightest first, into up to eight venues. Songs without a chart at that
+// lightest first, into up to eight venues, plus one more venue past the
+// stadium for each step of difficulty above Easy (when the library is big
+// enough). Songs without a chart at that
 // difficulty are left out while there are enough others (they would be played
 // on a harder one). Songs whose chart cannot be read fall back to song.ini.
 std::vector<Tier> buildSetlists(const std::vector<std::pair<fs::path, std::pair<std::string, std::string>>> &songs,
                                 int difficulty);
 // A guitar difficulty from a folder's song.ini, or -1.
 int ratingOf(const fs::path &folder);
-// Gives the venues that host a duel (the club, the festival, the stadium)
-// their rival, fighting over the venue's encore. Old careers get them on load.
+// Gives the venues that host a duel (the club, the festival, the stadium and
+// the venues past it) their rival, fighting over the venue's encore. Old
+// careers get them on load.
 void assignDuels(std::vector<Tier> &tiers);
-// The band career's final stop: the Inferno, where the final boss (duel.hpp's
-// last rival) plays `song`. Appended after the stadium.
+// The last stop of a band career and of an Expert career: the Inferno, where
+// the final boss (duel::finalBoss) plays `song`. Appended after the last venue.
 void addFinalBoss(std::vector<Tier> &tiers, const Gig &song);
 // The band's stars for a song: the average of everyone's, rounded down, so the
 // whole band has to play well for a good result.

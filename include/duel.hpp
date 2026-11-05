@@ -18,7 +18,9 @@ struct Rival {
     unsigned color;                     // 0xRRGGBB, their lights on stage
     bool bandOnly = false;              // fought by two to four players only
 };
-// Three career rivals, weakest first, then Lived: the band career's final boss.
+// The club, festival and stadium rivals (weakest first), then Lived, the final
+// boss of the band career and of Expert careers, then the three bosses of the
+// venues past the stadium: Capitã Maré, Grizzlo and Zorg Nebula.
 const std::vector<Rival> &rivals();
 constexpr int finalBoss = 3;
 // An attack picked by `salt`, the same way a duel picks one.
