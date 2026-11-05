@@ -1,4 +1,41 @@
 # Changelog
+## 0.4.0
+
+The first release of this fork (RBonaldi/switch-hero): a 3D stage, a career,
+rival duels, a band career, battles and bosses. It passes the desktop tests
+and the Switch cross-build. Frame pacing of the 3D stage and the multiplayer
+modes still need a full run on a console.
+
+### Stage
+- A low-poly 3D stage behind the highway with an original band that plays
+  along: moves to the beat, flinches on misses, lights up in star power.
+  Options > Customize > Stage turns it off.
+
+### Career
+- From a garage to a stadium, with setlists built from your own library as a
+  difficulty ladder (lightest charts first). Clear three songs for the
+  encore; the encore opens the next venue. Stars earn cash for a shop of
+  guitars, jackets and fire columns.
+- Each step of difficulty adds a venue past the stadium with its own boss:
+  Capitã Maré (Medium), Grizzlo (Hard), Zorg Nebula (Expert), and then the
+  Inferno, where Lived is the final boss.
+
+### Duels and battles
+- Rival duels: star phrases arm attacks (lefty flip, overdrive, blackout,
+  broken string) and the rival throws them back.
+- Battle menu: rematch any rival a career has reached, alone or as a band,
+  or player vs player on any song.
+
+### Band career *(hardware)*
+- Two to four players on one docked console share one band meter; a player
+  who runs dry is out until a bandmate's star power saves them, and the band
+  earns the average of everyone's stars.
+
+### Other
+- Career saves move to `career.cfg` version 3 (older careers are dealt again,
+  keeping band, cash, shop and rivals beaten); the band career is saved in
+  `band.cfg`. Progress in `scores.cfg` is untouched.
+
 ## 0.3.1
 
 A small release on top of 0.3: a Spanish translation and classic Guitar Hero
